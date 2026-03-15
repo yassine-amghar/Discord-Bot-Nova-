@@ -1,0 +1,30 @@
+{
+    "760056083094962198": {
+        "wallet": 3047,
+        "bank": 1,
+        "last_daily": 1769095686.4312239,
+        "last_work": 1769095684.6071298,
+        "last_rob": 1768181162.3449612,
+        "last_heist": 1768181171.969443,
+        "partner": null,
+        "marry_date": 0,
+        "credits": 585,
+        "xp": 420,
+        "level": 1,
+        "booster_end": 1768152834.0656543
+    },
+    "501278800110157847": {
+        "wallet": 1000000,
+        "bank": 10000000,
+        "last_daily": 0,
+        "last_work": 1768051039.8807888,
+        "last_rob": 0,
+        "last_heist": 1768050936.460804,
+        "partner": null,
+        "marry_date": 0,
+        "credits": 5,
+        "xp": 20,
+        "level": 1,
+        "booster_end": 0
+    }
+}
