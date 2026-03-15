@@ -1335,14 +1335,14 @@ async def post_guidelines(channel):
         @discord.ui.button(label="Get your roles here", style=discord.ButtonStyle.primary, emoji="🌹", custom_id="goto_profile")
         async def profile_btn(self, interaction, btn):
             await interaction.response.send_message(
-                "Head over to 1482802311578259497 to get your roles!",
+                "Head over to <#1482802311578259497> to get your roles!",
                 ephemeral=True
             )
 
         @discord.ui.button(label="Server Perks", style=discord.ButtonStyle.secondary, emoji="🎲", custom_id="goto_perks")
         async def perks_btn(self, interaction, btn):
             await interaction.response.send_message(
-                "Check out 1482802267680804964 to see all server perks!",
+                "Check out <#1482802267680804964> to see all server perks!",
                 ephemeral=True
             )
 
