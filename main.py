@@ -1263,6 +1263,231 @@ async def progress(ctx, member: discord.Member = None):
     await ctx.send(embed=view.progress_embed(), view=view)
 
 # ─────────────────────────────────────────────
+# GUIDELINES & PROFILE SETUP COMMANDS
+# Add these to your main.py
+# ─────────────────────────────────────────────
+
+# Color roles — create these in your Discord server
+COLOR_ROLES = {
+    # Red/Pink
+    "Scarlet Fury":      "🔴",
+    "Fire Pop":          "🟠",
+    "Rose Dust":         "🌸",
+    "Crimson Blaze":     "❤️",
+    "Raspberry Burst":   "🍇",
+    "Blush Bloom":       "🌷",
+    # Yellow/Orange
+    "Golden Ember":      "🟡",
+    "Sunbeam Honey":     "🍯",
+    "Apricot Glow":      "🍑",
+    # Green
+    "Emerald Surge":     "💚",
+    "Mint Breeze":       "🌿",
+    "Frosted Mist":      "🩵",
+    # Blue
+    "Ocean Depth":       "🌊",
+}
+
+# ── Guidelines Embed ──
+async def post_guidelines(channel):
+    embed = discord.Embed(
+        title="📋  Hang Spot — Guidelines",
+        description=(
+            "Welcome to **Hang Spot** 🍄\n"
+            "An **active and chill** community with emotes and daily giveaways.\n"
+            "Please read and respect the rules below before participating.\n\n"
+            "**Owner:** EN1SSAY\n"
+        ),
+        color=0xFF85A1
+    )
+
+    embed.add_field(
+        name="1️⃣  Discord TOS",
+        value="Follow [Discord's Terms of Service](https://discord.com/terms) and Community Guidelines at all times.",
+        inline=False
+    )
+    embed.add_field(
+        name="2️⃣  Be Respectful",
+        value="Hate speech, harassment, sexism, racism, and doxing are **strictly forbidden** and will result in an immediate ban.",
+        inline=False
+    )
+    embed.add_field(
+        name="3️⃣  SFW Only",
+        value="This server is **strictly Safe For Work**. No NSFW content of any kind. No e-dating.",
+        inline=False
+    )
+    embed.add_field(
+        name="4️⃣  No Advertising",
+        value="Unauthorized promotion, server links, or poaching of members is **not allowed**.",
+        inline=False
+    )
+    embed.add_field(
+        name="5️⃣  Staff Discretion",
+        value="Staff may take action without prior warning. Follow staff instructions without argument.",
+        inline=False
+    )
+    embed.set_footer(text="By participating in this server you agree to these rules.")
+
+    class GuidelinesView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(label="Get your roles here", style=discord.ButtonStyle.primary, emoji="🌹", custom_id="goto_profile")
+        async def profile_btn(self, interaction, btn):
+            await interaction.response.send_message(
+                "Head over to 1482802311578259497 to get your roles!",
+                ephemeral=True
+            )
+
+        @discord.ui.button(label="Server Perks", style=discord.ButtonStyle.secondary, emoji="🎲", custom_id="goto_perks")
+        async def perks_btn(self, interaction, btn):
+            await interaction.response.send_message(
+                "Check out 1482802267680804964 to see all server perks!",
+                ephemeral=True
+            )
+
+    await channel.send(embed=embed, view=GuidelinesView())
+
+
+# ── Profile / Role Selection ──
+class GenderView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="1. Female", style=discord.ButtonStyle.secondary, emoji="🌸", custom_id="role_female")
+    async def female_btn(self, interaction, btn):
+        role = discord.utils.get(interaction.guild.roles, name="Female")
+        male_role = discord.utils.get(interaction.guild.roles, name="Male")
+        if not role:
+            return await interaction.response.send_message("❌ `Female` role not found. Ask an admin to create it.", ephemeral=True)
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role)
+            return await interaction.response.send_message("🌸 Removed your **Female** role.", ephemeral=True)
+        if male_role and male_role in interaction.user.roles:
+            await interaction.user.remove_roles(male_role)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message("🌸 You now have the **Female** role!", ephemeral=True)
+
+    @discord.ui.button(label="2. Male", style=discord.ButtonStyle.secondary, emoji="💙", custom_id="role_male")
+    async def male_btn(self, interaction, btn):
+        role = discord.utils.get(interaction.guild.roles, name="Male")
+        female_role = discord.utils.get(interaction.guild.roles, name="Female")
+        if not role:
+            return await interaction.response.send_message("❌ `Male` role not found. Ask an admin to create it.", ephemeral=True)
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role)
+            return await interaction.response.send_message("💙 Removed your **Male** role.", ephemeral=True)
+        if female_role and female_role in interaction.user.roles:
+            await interaction.user.remove_roles(female_role)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message("💙 You now have the **Male** role!", ephemeral=True)
+
+
+class ColorSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=name, emoji=emoji, value=name)
+            for name, emoji in COLOR_ROLES.items()
+        ]
+        super().__init__(
+            placeholder="🎨 Choose your color...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="color_select"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen = self.values[0]
+        # Remove all other color roles first
+        roles_to_remove = [
+            discord.utils.get(interaction.guild.roles, name=name)
+            for name in COLOR_ROLES
+        ]
+        roles_to_remove = [r for r in roles_to_remove if r and r in interaction.user.roles]
+        if roles_to_remove:
+            await interaction.user.remove_roles(*roles_to_remove)
+
+        # Add chosen role
+        new_role = discord.utils.get(interaction.guild.roles, name=chosen)
+        if not new_role:
+            return await interaction.response.send_message(
+                f"❌ Role `{chosen}` not found. Ask an admin to create it.", ephemeral=True
+            )
+        await interaction.user.add_roles(new_role)
+        emoji = COLOR_ROLES[chosen]
+        await interaction.response.send_message(
+            f"{emoji} You now have the **{chosen}** color role!", ephemeral=True
+        )
+
+
+class ColorView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ColorSelect())
+
+
+async def post_profile(channel):
+    # Gender selection embed
+    gender_embed = discord.Embed(
+        title="💮  Gender Roles",
+        description=(
+            "Pick your gender role below.\n"
+            "Click again to **remove** it.\n\n"
+            "**1.** 🌸 Female\n"
+            "**2.** 💙 Male"
+        ),
+        color=0xFF85A1
+    )
+    await channel.send(embed=gender_embed, view=GenderView())
+
+    # Color selection embed
+    color_embed = discord.Embed(
+        title="🎨  Color Roles",
+        description=(
+            "Choose your name color from the dropdown below!\n\n"
+            "**Red / Pink**\n"
+            "🔴 Scarlet Fury  •  🟠 Fire Pop  •  🌸 Rose Dust\n"
+            "❤️ Crimson Blaze  •  🍇 Raspberry Burst  •  🌷 Blush Bloom\n\n"
+            "**Yellow / Orange**\n"
+            "🟡 Golden Ember  •  🍯 Sunbeam Honey  •  🍑 Apricot Glow\n\n"
+            "**Green**\n"
+            "💚 Emerald Surge  •  🌿 Mint Breeze  •  🩵 Frosted Mist\n\n"
+            "**Blue**\n"
+            "🌊 Ocean Depth"
+        ),
+        color=0x5865F2
+    )
+    await channel.send(embed=color_embed, view=ColorView())
+
+
+# ── Admin Setup Commands ──
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupguidelines(ctx):
+    """Post the guidelines embed in the current channel."""
+    await post_guidelines(ctx.channel)
+    await ctx.message.delete()
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupprofile(ctx):
+    """Post the profile/role selection embed in the current channel."""
+    await post_profile(ctx.channel)
+    await ctx.message.delete()
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupall(ctx, guidelines_channel: discord.TextChannel, profile_channel: discord.TextChannel):
+    """Post everything in the correct channels at once.
+    Usage: .setupall #guidelines #profile
+    """
+    await post_guidelines(guidelines_channel)
+    await post_profile(profile_channel)
+    await ctx.send(f"✅ Guidelines posted in {guidelines_channel.mention} and profile in {profile_channel.mention}.")
+
+# ─────────────────────────────────────────────
 # 12. START
 # ─────────────────────────────────────────────
 if TOKEN:
