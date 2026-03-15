@@ -1114,6 +1114,155 @@ async def ship(ctx, member1: discord.Member, member2: discord.Member = None):
     await ctx.send(embed=embed)
 
 # ─────────────────────────────────────────────
+# LEVEL COMMAND — add this in the GENERAL COMMANDS section
+# ─────────────────────────────────────────────
+
+class LevelView(discord.ui.View):
+    def __init__(self, ctx, target, data):
+        super().__init__(timeout=120)
+        self.ctx    = ctx
+        self.target = target
+        self.data   = data
+        self.notif_server = False
+        self.notif_dm     = False
+
+    def progress_embed(self):
+        u   = self.data[str(self.target.id)]
+        lvl = u["level"]
+        xp  = u["xp"]
+        needed  = lvl * 500
+        filled  = int((xp / needed) * 20) if needed else 0
+        bar     = "█" * filled + "░" * (20 - filled)
+        mult    = get_multiplier(self.data, self.target.id)
+        prestige = u.get("prestige", 0)
+
+        # Global rank
+        sorted_users = sorted(
+            self.data.items(),
+            key=lambda x: (x[1].get("prestige", 0), x[1].get("level", 1), x[1].get("xp", 0)),
+            reverse=True
+        )
+        rank = next((i + 1 for i, (uid, _) in enumerate(sorted_users) if uid == str(self.target.id)), "?")
+
+        # Milestones
+        milestones = [
+            (5,   "📹 Streaming / Camera"),
+            (10,  "🖼️ Media Channel Posting"),
+            (20,  "😄 External Emojis"),
+            (30,  "🎞️ GIFs"),
+            (40,  "🎨 Color Panel"),
+            (50,  "🗂️ External Stickers"),
+            (60,  "📸 Post Images Anywhere"),
+            (80,  "🔊 Soundboards"),
+            (100, "⭐ Prestige"),
+        ]
+
+        milestone_lines = []
+        for req_lvl, name in milestones:
+            if lvl >= req_lvl:
+                milestone_lines.append(f"✅ {name} *(Lvl {req_lvl})*")
+            else:
+                milestone_lines.append(f"❌ {name} *(Lvl {req_lvl})*")
+
+        embed = discord.Embed(
+            title=f"📊 {self.target.display_name}'s Progress",
+            color=0x5865F2
+        )
+        embed.set_thumbnail(url=self.target.display_avatar.url)
+
+        embed.add_field(
+            name="⚡ Level & XP",
+            value=(
+                f"**Level:** {lvl}  •  **Prestige:** {prestige}\n"
+                f"**XP Multiplier:** {mult}x\n"
+                f"**Global Rank:** #{rank}\n"
+                f"**Next Level:** {needed - xp:,} XP needed\n"
+                f"`{bar}` {xp}/{needed}"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🏆 Milestones",
+            value="\n".join(milestone_lines),
+            inline=False
+        )
+
+        embed.set_footer(text="💡 Earn XP by chatting in text channels or being active in VC!")
+        return embed
+
+    def credits_embed(self):
+        u = self.data[str(self.target.id)]
+        embed = discord.Embed(title=f"🪙 {self.target.display_name}'s Credits", color=0xF1C40F)
+        embed.add_field(name="Credits", value=f"**{u['credits']:,}**")
+        embed.set_footer(text="Earn credits by chatting every 30s (+5 each time)")
+        return embed
+
+    def boosters_embed(self):
+        u   = self.data[str(self.target.id)]
+        now = time.time()
+        rem = u.get("booster_end", 0) - now
+        embed = discord.Embed(title=f"🚀 {self.target.display_name}'s Boosters", color=0x9B59B6)
+        if rem > 0:
+            embed.add_field(name="2x Booster", value=f"Expires in **{str(datetime.timedelta(seconds=int(rem)))}**")
+        else:
+            embed.description = "No active boosters."
+        return embed
+
+    @discord.ui.button(label="Progress", style=discord.ButtonStyle.primary, emoji="📊")
+    async def progress_btn(self, interaction, btn):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your menu!", ephemeral=True)
+        await interaction.response.edit_message(embed=self.progress_embed(), view=self)
+
+    @discord.ui.button(label="Credits", style=discord.ButtonStyle.secondary, emoji="🪙")
+    async def credits_btn(self, interaction, btn):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your menu!", ephemeral=True)
+        await interaction.response.edit_message(embed=self.credits_embed(), view=self)
+
+    @discord.ui.button(label="Boosters", style=discord.ButtonStyle.secondary, emoji="🚀")
+    async def boosters_btn(self, interaction, btn):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your menu!", ephemeral=True)
+        await interaction.response.edit_message(embed=self.boosters_embed(), view=self)
+
+    @discord.ui.button(label="Equip Tag", style=discord.ButtonStyle.success, emoji="🏷️")
+    async def equip_btn(self, interaction, btn):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your menu!", ephemeral=True)
+        await interaction.response.send_message(
+            "🏷️ To equip your server tag, go to **Server Settings → Members → Your Profile** and select the tag.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="🔔 Server Notifs", style=discord.ButtonStyle.secondary, row=1)
+    async def server_notif_btn(self, interaction, btn):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your menu!", ephemeral=True)
+        self.notif_server = not self.notif_server
+        btn.style = discord.ButtonStyle.success if self.notif_server else discord.ButtonStyle.secondary
+        btn.label = "🔔 Server Notifs ON" if self.notif_server else "🔔 Server Notifs"
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="📩 DM Notifs", style=discord.ButtonStyle.secondary, row=1)
+    async def dm_notif_btn(self, interaction, btn):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your menu!", ephemeral=True)
+        self.notif_dm = not self.notif_dm
+        btn.style = discord.ButtonStyle.success if self.notif_dm else discord.ButtonStyle.secondary
+        btn.label = "📩 DM Notifs ON" if self.notif_dm else "📩 DM Notifs"
+        await interaction.response.edit_message(view=self)
+
+
+@bot.command(aliases=["lvl", "level"])
+async def progress(ctx, member: discord.Member = None):
+    t = member or ctx.author
+    data = get_db(); ensure_user(data, t.id)
+    view = LevelView(ctx, t, data)
+    await ctx.send(embed=view.progress_embed(), view=view)
+
+# ─────────────────────────────────────────────
 # 12. START
 # ─────────────────────────────────────────────
 if TOKEN:
