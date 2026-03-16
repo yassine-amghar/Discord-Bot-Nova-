@@ -43,7 +43,12 @@ db_pool = None
 
 async def init_db():
     global db_pool
-    db_pool = asyncpg.create_pool(os.getenv("DATABASE_URL"))
+    db_pool = await asyncpg.create_pool(
+        os.getenv("DATABASE_URL"),
+        ssl="require",
+        min_size=1,
+        max_size=5
+    )
     async with db_pool.acquire() as conn:
         await conn.execute(
             "CREATE TABLE IF NOT EXISTS users "
