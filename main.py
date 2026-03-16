@@ -1727,10 +1727,9 @@ async def post_perks(channel):
     embed.add_field(
         name="✧ ━━━━━━━━━━━━━━━━━━ ✧\n👑 ﹒ 𝖂𝖊𝖊𝖐𝖑𝖞 𝕽𝖔𝖑𝖊𝖘",
         value=(
-            "**👸 Princess / 🤴 Prince** — Top chatters of the week\n"
-            "Awarded every Monday to the top users in <#1482802842900103311>\n\n"
-            "**🦅 Godfather** — Top voice user of the week\n"
-            "Awarded every Monday to the #1 voice channel user"
+            "**👸 Princess** — Top female chatter of the week\n"
+            "**🤴 Prince** — Top male chatter of the week\n"
+            "Awarded every Sunday at midnight to the most active members"
         ),
         inline=False
     )
