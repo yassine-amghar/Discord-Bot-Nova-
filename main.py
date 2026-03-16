@@ -61,7 +61,13 @@ async def _async_get_db():
         return {}
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("SELECT user_id, data FROM users")
-        return {row["user_id"]: dict(row["data"]) for row in rows}
+        result = {}
+    for row in rows:
+        data = row["data"]
+        if isinstance(data, str):
+            data = json.loads(data)
+        result[row["user_id"]] = dict(data)
+    return result
 
 async def _async_save_db(data):
     if not db_pool:
