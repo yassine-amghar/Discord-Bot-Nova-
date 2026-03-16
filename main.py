@@ -1924,7 +1924,10 @@ class ScratchView(discord.ui.View):
             return await interaction.response.send_message("Not your ticket!", ephemeral=True)
         if self.done:
             return
+
         idx = int(interaction.data["custom_id"].split("_")[1])
+
+        # Reveal the clicked box
         for b in self.children:
             if hasattr(b, "custom_id") and b.custom_id == f"scratch_{idx}":
                 b.label    = self._format_val(self.grid[idx])
@@ -1932,19 +1935,48 @@ class ScratchView(discord.ui.View):
                 b.style    = discord.ButtonStyle.primary
                 self.revealed += 1
                 break
+
+        # Check if we have 3 matching revealed values so far
+        from collections import Counter
+        revealed_vals = []
+        for b in self.children:
+            if hasattr(b, "custom_id") and b.label != "🎴":
+                try:
+                    i = int(b.custom_id.split("_")[1])
+                    revealed_vals.append(self.grid[i])
+                except:
+                    pass
+
+        counts    = Counter(revealed_vals)
+        winner_val = next((v for v, c in counts.items() if c >= 3), None)
+
+        if winner_val:
+            # Won! Reveal all remaining boxes and declare win
+            self.done = True
+            uid       = str(self.ctx.author.id)
+            self.data[uid]["wallet"] += winner_val
+            save_db(self.data)
+            for b in self.children:
+                if hasattr(b, "custom_id") and b.label == "🎴":
+                    try:
+                        i      = int(b.custom_id.split("_")[1])
+                        b.label = self._format_val(self.grid[i])
+                        b.style = discord.ButtonStyle.secondary
+                    except:
+                        pass
+                b.disabled = True
+            content = f"🎉 **WINNER!** You matched three **{self._format_val(winner_val)}** and won **${winner_val:,}**!"
+            return await interaction.response.edit_message(content=content, view=self)
+
+        # No win yet — check if all boxes revealed with no winner
         if self.revealed == 9:
-            self.done      = True
-            winner_val     = self._check_winner()
-            uid            = str(self.ctx.author.id)
+            self.done = True
             for b in self.children:
                 b.disabled = True
-            if winner_val:
-                self.data[uid]["wallet"] += winner_val
-                save_db(self.data)
-                content = f"🎉 WINNER! You matched three {self._format_val(winner_val)} and won ${winner_val:,}!"
-            else:
-                content = "😔 No match this time. Better luck next time!"
-            return await interaction.response.edit_message(content=content, view=self)
+            return await interaction.response.edit_message(
+                content="😔 No match this time. Better luck next time!", view=self
+            )
+
         await interaction.response.edit_message(view=self)
 
 
