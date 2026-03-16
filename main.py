@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 import aiohttp
+import asyncpg
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -19,36 +20,57 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix=[".", "+"], intents=intents, help_command=None)
 
-DB_FILE = "users.json"
-
-# Channel IDs
-GUIDELINES_ID   = 1482796651344040099
-ANNOUNCE_ID     = 1482802123308531813
-PERKS_ID        = 1482802267680804964
-PROFILE_ID      = 1482802311578259497
-SUPPORT_ID      = 1482802401844006932
-FAME_ID         = 1482802962198823093
-CHAT_LB_ID      = 1482804897631043777
-VOICE_LB_ID     = 1482804934331338772
-LEVELS_ID       = 1482804659813875823
-HANGSPOT_ID     = 1482802842900103311
-
-# Tracked channels for chat leaderboard (hangspot + chillspot)
-TRACKED_CHAT_CHANNELS = {1482802842900103311, 1482802872900103312}  # update chillspot ID if different
-
 # ─────────────────────────────────────────────
-# DATABASE
+# POSTGRESQL DATABASE
 # ─────────────────────────────────────────────
-def get_db():
-    try:
-        with open(DB_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+db_pool = None
+
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"))
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS users "
+            "(user_id TEXT PRIMARY KEY, data JSONB NOT NULL DEFAULT '{}')"
+        )
+    print("✅ PostgreSQL connected.")
+
+async def _async_get_db():
+    if not db_pool:
         return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, data FROM users")
+        return {row["user_id"]: dict(row["data"]) for row in rows}
+
+async def _async_save_db(data):
+    if not db_pool:
+        return
+    async with db_pool.acquire() as conn:
+        for uid, udata in data.items():
+            await conn.execute(
+                "INSERT INTO users (user_id, data) VALUES ($1, $2::jsonb) "
+                "ON CONFLICT (user_id) DO UPDATE SET data = $2::jsonb",
+                uid, json.dumps(udata)
+            )
+
+def get_db():
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        import concurrent.futures
+        future = asyncio.run_coroutine_threadsafe(_async_get_db(), loop)
+        try:
+            return future.result(timeout=10)
+        except Exception as e:
+            print(f"get_db error: {e}")
+            return {}
+    return loop.run_until_complete(_async_get_db())
 
 def save_db(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        asyncio.ensure_future(_async_save_db(data))
+    else:
+        loop.run_until_complete(_async_save_db(data))
 
 def ensure_user(data, user_id):
     uid = str(user_id)
@@ -608,6 +630,7 @@ async def weekly_reset():
 
 @bot.event
 async def on_ready():
+    await init_db()
     print(f"✅ {bot.user} is online | Prefixes: . and +")
     bot.add_view(GuidelinesView())
     bot.add_view(GenderView())
@@ -2055,6 +2078,109 @@ async def buy(ctx, item: str = None):
         return await ctx.send(embed=embed, view=ScratchView(ctx, item, data))
 
     save_db(data)
+
+
+
+# ─────────────────────────────────────────────
+# ADMIN COMMANDS
+# ─────────────────────────────────────────────
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addmoney(ctx, member: discord.Member, amount: int, location: str = "wallet"):
+    """Add or remove money. Use negative number to deduct. .addmoney @user 5000 wallet"""
+    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    loc  = location.lower()
+    if loc not in ("wallet", "bank"):
+        return await ctx.send("❌ Location must be `wallet` or `bank`.")
+    data[uid][loc] = max(0, data[uid][loc] + amount)
+    save_db(data)
+    action = "Added" if amount >= 0 else "Removed"
+    await ctx.send(f"✅ {action} **${abs(amount):,}** {'to' if amount >= 0 else 'from'} {member.display_name}'s **{loc}**. New balance: **${data[uid][loc]:,}**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setmoney(ctx, member: discord.Member, amount: int, location: str = "wallet"):
+    """Set exact money amount. .setmoney @user 10000 wallet"""
+    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    loc  = location.lower()
+    if loc not in ("wallet", "bank"):
+        return await ctx.send("❌ Location must be `wallet` or `bank`.")
+    data[uid][loc] = max(0, amount)
+    save_db(data)
+    await ctx.send(f"✅ Set {member.display_name}'s **{loc}** to **${amount:,}**.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addxp(ctx, member: discord.Member, amount: int):
+    """Add or remove XP. .addxp @user 500"""
+    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data[uid]["xp"] = max(0, data[uid]["xp"] + amount)
+    save_db(data)
+    action = "Added" if amount >= 0 else "Removed"
+    await ctx.send(f"✅ {action} **{abs(amount)} XP** {'to' if amount >= 0 else 'from'} {member.display_name}. Current XP: **{data[uid]['xp']}**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setlevel(ctx, member: discord.Member, level: int):
+    """Set a user's level. .setlevel @user 10"""
+    if level < 1:
+        return await ctx.send("❌ Level must be at least 1.")
+    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data[uid]["level"] = level
+    data[uid]["xp"]    = 0
+    save_db(data)
+    await ctx.send(f"✅ Set {member.display_name}'s level to **{level}**.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addcredits(ctx, member: discord.Member, amount: int):
+    """Add or remove credits. .addcredits @user 100"""
+    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data[uid]["credits"] = max(0, data[uid]["credits"] + amount)
+    save_db(data)
+    action = "Added" if amount >= 0 else "Removed"
+    await ctx.send(f"✅ {action} **{abs(amount)} credits** {'to' if amount >= 0 else 'from'} {member.display_name}. Total: **{data[uid]['credits']:,}**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def resetuser(ctx, member: discord.Member):
+    """Fully reset a user's data. .resetuser @user"""
+    data = get_db()
+    uid  = str(member.id)
+    if uid in data:
+        del data[uid]
+    save_db(data)
+    await ctx.send(f"🗑️ Reset all data for **{member.display_name}**.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def userinfo(ctx, member: discord.Member = None):
+    """View full data for a user. .userinfo @user"""
+    t    = member or ctx.author
+    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    embed = discord.Embed(title=f"🔍 {t.display_name}'s Data", color=0x5865F2)
+    embed.set_thumbnail(url=t.display_avatar.url)
+    embed.add_field(name="💰 Economy",   value=f"Wallet: ${u['wallet']:,}\nBank: ${u['bank']:,}\nCredits: {u['credits']:,}", inline=True)
+    embed.add_field(name="📊 Level",     value=f"Level: {u['level']}\nXP: {u['xp']}\nPrestige: {u.get('prestige',0)}", inline=True)
+    embed.add_field(name="✨ Social",    value=f"Charms: {u['charms']:,}\nPartner: {'<@'+str(u['partner'])+'>' if u['partner'] else 'None'}", inline=True)
+    rem = u.get("booster_end", 0) - time.time()
+    embed.add_field(name="🚀 Booster",   value=str(datetime.timedelta(seconds=int(rem))) if rem > 0 else "None", inline=True)
+    embed.add_field(name="🍵 Blacktea",  value=f"{u.get('blacktea_wins',0)} wins", inline=True)
+    embed.add_field(name="💬 Messages",  value=f"Weekly: {u.get('weekly_messages',0):,}", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def serverinfo(ctx):
+    """Show economy stats for the server."""
+    data  = get_db()
+    total = sum(u.get("wallet", 0) + u.get("bank", 0) for u in data.values())
+    embed = discord.Embed(title="📊 Server Economy Stats", color=0x5865F2)
+    embed.add_field(name="Registered Users",       value=f"{len(data):,}")
+    embed.add_field(name="Total Money in Economy", value=f"${total:,}")
+    embed.add_field(name="Server Members",         value=f"{ctx.guild.member_count:,}")
+    await ctx.send(embed=embed)
 
 
 # ─────────────────────────────────────────────
