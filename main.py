@@ -21,13 +21,29 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix=[".", "+"], intents=intents, help_command=None)
 
 # ─────────────────────────────────────────────
+# CHANNEL IDs
+# ─────────────────────────────────────────────
+GUIDELINES_ID         = 1482796651344040099
+ANNOUNCE_ID           = 1482802123308531813
+PERKS_ID              = 1482802267680804964
+PROFILE_ID            = 1482802311578259497
+SUPPORT_ID            = 1482802401844006932
+HANGSPOT_ID           = 1482802842900103311
+FAME_ID               = 1482802962198823093
+CHAT_LB_ID            = 1482804897631043777
+VOICE_LB_ID           = 1482804934331338772
+LEVELS_ID             = 1482804659813875823
+TRACKED_CHAT_CHANNELS = {1482802842900103311, 1482802872900103312}
+
+
+# ─────────────────────────────────────────────
 # POSTGRESQL DATABASE
 # ─────────────────────────────────────────────
 db_pool = None
 
 async def init_db():
     global db_pool
-    db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"))
+    db_pool = asyncpg.create_pool(os.getenv("DATABASE_URL"))
     async with db_pool.acquire() as conn:
         await conn.execute(
             "CREATE TABLE IF NOT EXISTS users "
@@ -53,24 +69,11 @@ async def _async_save_db(data):
                 uid, json.dumps(udata)
             )
 
-def get_db():
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        import concurrent.futures
-        future = asyncio.run_coroutine_threadsafe(_async_get_db(), loop)
-        try:
-            return future.result(timeout=10)
-        except Exception as e:
-            print(f"get_db error: {e}")
-            return {}
-    return loop.run_until_complete(_async_get_db())
+async def get_db():
+    return await _async_get_db()
 
-def save_db(data):
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        asyncio.ensure_future(_async_save_db(data))
-    else:
-        loop.run_until_complete(_async_save_db(data))
+async def save_db(data):
+    await _async_save_db(data)
 
 def ensure_user(data, user_id):
     uid = str(user_id)
@@ -483,7 +486,7 @@ lb_message_ids = {"chat": None, "voice": None}
 # ─────────────────────────────────────────────
 @tasks.loop(minutes=5)
 async def update_leaderboards():
-    data = get_db()
+    data = await get_db()
     # Update chat leaderboard
     chat_channel = bot.get_channel(CHAT_LB_ID)
     if chat_channel:
@@ -533,7 +536,7 @@ async def weekly_reset():
     if datetime.datetime.utcnow().weekday() != 6:
         return
 
-    data = get_db()
+    data = await get_db()
 
     PRINCE_ROLE_ID    = 1483096301007667332
     PRINCESS_ROLE_ID  = 1483096038989627564
@@ -625,7 +628,7 @@ async def weekly_reset():
     for uid in data:
         data[uid]["weekly_messages"]      = 0
         data[uid]["weekly_voice_minutes"] = 0
-    save_db(data)
+    await save_db(data)
     print("✅ Weekly reset complete — Prince & Princess assigned.")
 
 @bot.event
@@ -651,8 +654,8 @@ async def on_message(message):
 
     if uid in afk_cache:
         del afk_cache[uid]
-        data = get_db(); ensure_user(data, message.author.id)
-        data[uid]["afk"] = None; save_db(data)
+        data = await get_db(); ensure_user(data, message.author.id)
+        data[uid]["afk"] = None; await save_db(data)
         try:
             await message.channel.send(f"👋 Welcome back, {message.author.mention}! AFK removed.", delete_after=5)
         except Exception:
@@ -668,7 +671,7 @@ async def on_message(message):
                 pass
 
     if uid not in msg_cooldown or now - msg_cooldown[uid] > 30:
-        data = get_db(); ensure_user(data, message.author.id)
+        data = await get_db(); ensure_user(data, message.author.id)
         data[uid]["credits"] = data[uid].get("credits", 0) + 5
         data[uid]["messages"][str(chan)] = data[uid]["messages"].get(str(chan), 0) + 1
 
@@ -699,7 +702,7 @@ async def on_message(message):
                 except Exception:
                     pass
 
-        save_db(data)
+        await save_db(data)
         msg_cooldown[uid] = now
 
     await bot.process_commands(message)
@@ -756,10 +759,10 @@ async def on_voice_state_update(member, before, after):
         if uid in voice_sessions:
             minutes = int((time.time() - voice_sessions[uid]) / 60)
             del voice_sessions[uid]
-            data = get_db(); ensure_user(data, member.id)
+            data = await get_db(); ensure_user(data, member.id)
             data[uid]["voice_minutes"]        = data[uid].get("voice_minutes", 0) + minutes
             data[uid]["weekly_voice_minutes"] = data[uid].get("weekly_voice_minutes", 0) + minutes
-            save_db(data)
+            await save_db(data)
 
 # ─────────────────────────────────────────────
 # FRAKTUR NICKNAME SYSTEM
@@ -857,7 +860,7 @@ async def help(ctx):
 
 @bot.command()
 async def credits(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id)
     u = data[str(ctx.author.id)]
     embed = discord.Embed(title=f"🪙 {ctx.author.display_name}'s Credits", color=0xF1C40F)
     embed.add_field(name="Credits", value=f"**{u['credits']:,}**")
@@ -867,7 +870,7 @@ async def credits(ctx):
 @bot.command()
 async def charms(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id)
+    data = await get_db(); ensure_user(data, t.id)
     embed = discord.Embed(title=f"✨ {t.display_name}'s Charms", description=f"**{data[str(t.id)]['charms']:,}** charms", color=0xFF69B4)
     await ctx.send(embed=embed)
 
@@ -875,7 +878,7 @@ async def charms(ctx, member: discord.Member = None):
 async def give_charm(ctx, member: discord.Member):
     if member == ctx.author:
         return await ctx.send("❌ You can't charm yourself.")
-    data = get_db()
+    data = await get_db()
     ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     uid = str(ctx.author.id)
     data[str(member.id)]["charms"] += 1
@@ -883,12 +886,12 @@ async def give_charm(ctx, member: discord.Member):
     if data[uid]["level"] >= 70:
         data[uid]["credits"] += 5
         bonus_msg = " *(+5 credits for your Lvl 70 perk!)*"
-    save_db(data)
+    await save_db(data)
     await ctx.send(f"✨ {ctx.author.mention} gave a charm to **{member.display_name}**! They now have **{data[str(member.id)]['charms']}** charms.{bonus_msg}")
 
 @bot.command(aliases=["lb"])
 async def leaderboard(ctx, category: str = "economy", page: int = 1):
-    data = get_db()
+    data = await get_db()
     page = max(1, page); per = 10; offset = (page - 1) * per
     categories = {
         "economy":   ("💰 Economy",    lambda x: x[1].get("wallet",0)+x[1].get("bank",0), lambda v: f"${v:,}"),
@@ -918,7 +921,7 @@ async def leaderboard(ctx, category: str = "economy", page: int = 1):
 
 @bot.command()
 async def boosters(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id)
     u = data[str(ctx.author.id)]
     embed = discord.Embed(title=f"🚀 {ctx.author.display_name}'s Boosters", color=0x9B59B6)
     rem = u.get("booster_end", 0) - time.time()
@@ -931,7 +934,7 @@ async def boosters(ctx):
 @bot.command()
 async def rank(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    data = await get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     sorted_users = sorted(data.items(), key=lambda x: (x[1].get("prestige",0), x[1].get("level",1), x[1].get("xp",0)), reverse=True)
     pos    = next((i+1 for i,(uid,_) in enumerate(sorted_users) if uid == str(t.id)), "?")
     needed = u["level"] * 500
@@ -947,19 +950,19 @@ async def rank(ctx, member: discord.Member = None):
 
 @bot.command()
 async def prestige(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id)
     uid = str(ctx.author.id); u = data[uid]
     if u["level"] < 50:
         return await ctx.send(f"❌ Reach **Level 50** to prestige. You are Level {u['level']}.")
     u["prestige"] = u.get("prestige",0) + 1
     u["level"] = 1; u["xp"] = 0
-    save_db(data)
+    await save_db(data)
     await ctx.send(f"🌟 {ctx.author.mention} prestiged! Now **Prestige {u['prestige']}** — Level reset to 1.")
 
 @bot.command()
 async def messages(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id)
+    data = await get_db(); ensure_user(data, t.id)
     msg_data = data[str(t.id)].get("messages", {})
     if not msg_data:
         return await ctx.send(f"📭 No message data for **{t.display_name}** yet.")
@@ -983,17 +986,17 @@ async def snipe(ctx):
 
 @bot.command()
 async def afk(ctx, *, reason: str = None):
-    data = get_db(); ensure_user(data, ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id)
     uid = str(ctx.author.id)
     data[uid]["afk"] = reason or "AFK"
     afk_cache[uid]   = reason or "AFK"
-    save_db(data)
+    await save_db(data)
     await ctx.send(f"💤 **{ctx.author.display_name}** is now AFK" + (f": *{reason}*" if reason else "."))
 
 @bot.command()
 async def partner(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    data = await get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     embed = discord.Embed(title=f"💍 {t.display_name}'s Marriage", color=0xFF69B4)
     if u.get("partner"):
         date = datetime.datetime.fromtimestamp(u["marry_date"]).strftime("%B %d, %Y")
@@ -1009,7 +1012,7 @@ async def partner(ctx, member: discord.Member = None):
 async def marry(ctx, member: discord.Member):
     if member == ctx.author or member.bot:
         return await ctx.send("❌ Invalid partner.")
-    data = get_db()
+    data = await get_db()
     ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     if data[str(ctx.author.id)]["partner"]:
         return await ctx.send("❌ You're already married. Use `.divorce` first.")
@@ -1024,12 +1027,12 @@ async def marry(ctx, member: discord.Member):
         async def yes(self, interaction, btn):
             if interaction.user != member:
                 return await interaction.response.send_message("Not your proposal!", ephemeral=True)
-            d = get_db(); now = time.time()
+            d = await get_db(); now = time.time()
             d[str(ctx.author.id)]["partner"]    = member.id
             d[str(member.id)]["partner"]        = ctx.author.id
             d[str(ctx.author.id)]["marry_date"] = now
             d[str(member.id)]["marry_date"]     = now
-            save_db(d)
+            await save_db(d)
             await interaction.response.edit_message(content=f"💍 **{ctx.author.display_name}** and **{member.display_name}** are now married! 🎊", view=None)
 
         @discord.ui.button(label="💔 Decline", style=discord.ButtonStyle.danger)
@@ -1042,7 +1045,7 @@ async def marry(ctx, member: discord.Member):
 
 @bot.command()
 async def divorce(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id)
     uid = str(ctx.author.id)
     pid = data[uid].get("partner")
     if not pid:
@@ -1050,7 +1053,7 @@ async def divorce(ctx):
     data[uid]["partner"] = None; data[uid]["marry_date"] = 0
     if str(pid) in data:
         data[str(pid)]["partner"] = None; data[str(pid)]["marry_date"] = 0
-    save_db(data)
+    await save_db(data)
     await ctx.send("💔 You are now divorced.")
 
 # ─────────────────────────────────────────────
@@ -1161,7 +1164,7 @@ class LevelView(discord.ui.View):
 @bot.command(aliases=["lvl", "level"])
 async def progress(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id)
+    data = await get_db(); ensure_user(data, t.id)
     view = LevelView(ctx, t, data)
     await ctx.send(embed=view.progress_embed(), view=view)
 
@@ -1193,9 +1196,9 @@ async def blacktea(ctx):
         while True:
             msg = await bot.wait_for("message", timeout=30.0, check=check)
             if msg.content.lower().strip() == word:
-                data = get_db(); ensure_user(data, msg.author.id)
+                data = await get_db(); ensure_user(data, msg.author.id)
                 data[str(msg.author.id)]["blacktea_wins"] += 1
-                save_db(data); del blacktea_sessions[cid]
+                await save_db(data); del blacktea_sessions[cid]
                 return await ctx.send(f"🎉 **{msg.author.display_name}** got it! The word was **{word}**!")
     except asyncio.TimeoutError:
         blacktea_sessions.pop(cid, None)
@@ -1207,7 +1210,7 @@ async def blacktea(ctx):
 @bot.command(aliases=["bal"])
 async def balance(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    data = await get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     embed = discord.Embed(title=f"💸 {t.display_name}'s Balance", color=0x2ECC71)
     embed.set_thumbnail(url=t.display_avatar.url)
     embed.add_field(name="👛 Wallet", value=f"${u['wallet']:,}",           inline=True)
@@ -1217,63 +1220,63 @@ async def balance(ctx, member: discord.Member = None):
 
 @bot.command(aliases=["dep"])
 async def deposit(ctx, amount: str):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     val = parse_amount(amount, data[uid]["wallet"])
     if not val or val <= 0 or val > data[uid]["wallet"]:
         return await ctx.send("❌ Invalid amount or not enough in wallet.")
     data[uid]["wallet"] -= val; data[uid]["bank"] += val
-    save_db(data); await ctx.send(f"✅ Deposited **${val:,}** to your bank.")
+    await save_db(data); await ctx.send(f"✅ Deposited **${val:,}** to your bank.")
 
 @bot.command(aliases=["with"])
 async def withdraw(ctx, amount: str):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     val = parse_amount(amount, data[uid]["bank"])
     if not val or val <= 0 or val > data[uid]["bank"]:
         return await ctx.send("❌ Invalid amount or not enough in bank.")
     data[uid]["bank"] -= val; data[uid]["wallet"] += val
-    save_db(data); await ctx.send(f"🏧 Withdrew **${val:,}** to your wallet.")
+    await save_db(data); await ctx.send(f"🏧 Withdrew **${val:,}** to your wallet.")
 
 @bot.command(aliases=["pay"])
 async def give(ctx, member: discord.Member, amount: str):
     if member == ctx.author or member.bot:
         return await ctx.send("❌ Invalid recipient.")
-    data = get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     val = parse_amount(amount, data[str(ctx.author.id)]["wallet"])
     if not val or val <= 0 or val > data[str(ctx.author.id)]["wallet"]:
         return await ctx.send("❌ Invalid amount.")
     data[str(ctx.author.id)]["wallet"] -= val
     data[str(member.id)]["wallet"]     += val
-    save_db(data); await ctx.send(f"💸 **{ctx.author.display_name}** gave **${val:,}** to **{member.display_name}**.")
+    await save_db(data); await ctx.send(f"💸 **{ctx.author.display_name}** gave **${val:,}** to **{member.display_name}**.")
 
 @bot.command()
 @commands.cooldown(1, 36, commands.BucketType.user)
 async def work(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     jobs = ["programmer","chef","taxi driver","streamer","delivery driver","barista","teacher","nurse"]
     pay  = random.randint(500, 1500) * get_multiplier(data, ctx.author.id)
     data[uid]["wallet"] += pay; data[uid]["last_work"] = time.time()
-    save_db(data); await ctx.send(f"💼 You worked as a **{random.choice(jobs)}** and earned **${pay:,}**!")
+    await save_db(data); await ctx.send(f"💼 You worked as a **{random.choice(jobs)}** and earned **${pay:,}**!")
 
 @bot.command()
 @commands.cooldown(1, 86400, commands.BucketType.user)
 async def daily(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     reward = 2500 * get_multiplier(data, ctx.author.id)
     data[uid]["wallet"] += reward; data[uid]["last_daily"] = time.time()
-    save_db(data); await ctx.send(f"🎁 Daily claimed! **+${reward:,}**")
+    await save_db(data); await ctx.send(f"🎁 Daily claimed! **+${reward:,}**")
 
 @bot.command()
 @commands.cooldown(1, 604800, commands.BucketType.user)
 async def weekly(ctx):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     reward = 15000 * get_multiplier(data, ctx.author.id)
     data[uid]["wallet"] += reward; data[uid]["last_weekly"] = time.time()
-    save_db(data); await ctx.send(f"🎁 Weekly claimed! **+${reward:,}**")
+    await save_db(data); await ctx.send(f"🎁 Weekly claimed! **+${reward:,}**")
 
 @bot.command()
 async def cooldowns(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    data = await get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     now = time.time()
     def fmt(r): return "✅ Ready" if r <= 0 else f"⏱️ {str(datetime.timedelta(seconds=int(r)))}"
     embed = discord.Embed(title=f"⏱️ {t.display_name}'s Cooldowns", color=0xE67E22)
@@ -1285,7 +1288,7 @@ async def cooldowns(ctx, member: discord.Member = None):
 
 @bot.command()
 async def inbox(ctx, page: int = 1):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     msgs = data[uid].get("inbox", [])
     if not msgs: return await ctx.send("📭 Your inbox is empty.")
     per = 5; page = max(1, min(page, max(1,(len(msgs)+per-1)//per)))
@@ -1298,7 +1301,7 @@ async def inbox(ctx, page: int = 1):
 @bot.command()
 async def rob(ctx, member: discord.Member):
     if member == ctx.author: return await ctx.send("❌ You can't rob yourself.")
-    data = get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     uid = str(ctx.author.id); tid = str(member.id)
     cd_left = 7200 - (time.time() - data[uid].get("last_rob", 0))
     if cd_left > 0: return await ctx.send(f"⏱️ Rob cooldown! **{str(datetime.timedelta(seconds=int(cd_left)))}** remaining.")
@@ -1312,7 +1315,7 @@ async def rob(ctx, member: discord.Member):
         fine = min(1000, data[uid]["wallet"])
         data[uid]["wallet"] = max(0, data[uid]["wallet"] - fine)
         await ctx.send(f"🚓 Busted! Paid a **${fine:,}** fine.")
-    save_db(data)
+    await save_db(data)
 
 # ─────────────────────────────────────────────
 # GAMBLING
@@ -1321,7 +1324,7 @@ async def rob(ctx, member: discord.Member):
 async def coinflip(ctx, amount: str, side: str):
     side = side.lower()
     if side not in ("heads","tails","h","t"): return await ctx.send("❌ Choose `heads` or `tails`.")
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
     if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
     data[uid]["wallet"] -= bet
@@ -1332,7 +1335,7 @@ async def coinflip(ctx, amount: str, side: str):
         msg = f"🪙 **{result.upper()}!** You won **${win:,}**! 🎉"
     else:
         msg = f"🪙 **{result.upper()}...** You lost **${bet:,}**."
-    save_db(data); await ctx.send(msg)
+    await save_db(data); await ctx.send(msg)
 
 class BlackjackView(discord.ui.View):
     VALS  = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
@@ -1372,7 +1375,7 @@ class BlackjackView(discord.ui.View):
             self.data[uid]["wallet"] += self.bet; note = "🤝 Push — bet returned."
         else:
             note = f"😔 You lost ${self.bet:,}."
-        save_db(self.data)
+        await save_db(self.data)
         for c in self.children: c.disabled = True
         await interaction.response.edit_message(embed=self.build_embed(ended=True, note=note), view=self)
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
@@ -1394,13 +1397,13 @@ class BlackjackView(discord.ui.View):
 
 @bot.command(aliases=["bj"])
 async def blackjack(ctx, amount: str):
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
     if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
-    data[uid]["wallet"] -= bet; save_db(data)
+    data[uid]["wallet"] -= bet; await save_db(data)
     view = BlackjackView(ctx, bet, data)
     if view.total(view.player) == 21:
-        win = int(bet * 1.5); data[uid]["wallet"] += bet + win; save_db(data)
+        win = int(bet * 1.5); data[uid]["wallet"] += bet + win; await save_db(data)
         return await ctx.send(embed=view.build_embed(ended=True, note=f"🃏 Blackjack! +${win:,}"))
     await ctx.send(embed=view.build_embed(), view=view)
 
@@ -1421,7 +1424,7 @@ ROULETTE_BETS = {
 async def roulette(ctx, amount: str, bet_type: str):
     bt = bet_type.lower()
     if bt not in ROULETTE_BETS: return await ctx.send(f"❌ Types: {', '.join(f'`{k}`' for k in ROULETTE_BETS)}")
-    data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
     if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
     data[uid]["wallet"] -= bet
@@ -1438,7 +1441,7 @@ async def roulette(ctx, amount: str, bet_type: str):
         embed.color = 0x2ECC71
     else:
         embed.add_field(name="Result", value=f"😔 Lost **${bet:,}**.", inline=False)
-    save_db(data); await ctx.send(embed=embed)
+    await save_db(data); await ctx.send(embed=embed)
 
 class RPSView(discord.ui.View):
     def __init__(self, ctx, opponent, bet, data):
@@ -1474,12 +1477,12 @@ class RPSView(discord.ui.View):
                 self.data[str(self.opponent.id)]["wallet"]   += self.bet
                 self.data[str(self.challenger.id)]["wallet"] -= self.bet
                 result = f"🏆 **{self.opponent.display_name}** wins **${self.bet:,}**!"
-            save_db(self.data)
+            await save_db(self.data)
             await interaction.message.edit(content=result, view=None)
 
 @bot.command()
 async def rps(ctx, member: discord.Member, amount: str):
-    data = get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     bet = parse_amount(amount, data[str(ctx.author.id)]["wallet"])
     if not bet or bet <= 0: return await ctx.send("❌ Invalid bet.")
     if bet > data[str(ctx.author.id)]["wallet"]: return await ctx.send(f"❌ {ctx.author.display_name} can't afford that.")
@@ -1498,7 +1501,7 @@ class DuelView(discord.ui.View):
         loser  = self.opponent if winner == self.challenger else self.challenger
         self.data[str(winner.id)]["wallet"] += self.bet
         self.data[str(loser.id)]["wallet"]  -= self.bet
-        save_db(self.data)
+        await save_db(self.data)
         await interaction.response.edit_message(content=f"⚔️ **{winner.display_name}** wins and takes **${self.bet:,}**!", view=None)
     @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction, btn):
@@ -1507,7 +1510,7 @@ class DuelView(discord.ui.View):
 
 @bot.command()
 async def duel(ctx, member: discord.Member, amount: str):
-    data = get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     bet = parse_amount(amount, data[str(ctx.author.id)]["wallet"])
     if not bet or bet <= 0: return await ctx.send("❌ Invalid bet.")
     if bet > data[str(ctx.author.id)]["wallet"]: return await ctx.send(f"❌ {ctx.author.display_name} can't afford that.")
@@ -1552,7 +1555,7 @@ class TTTView(discord.ui.View):
             loser = self.opponent if winner == self.challenger else self.challenger
             self.data[str(winner.id)]["wallet"] += self.bet
             self.data[str(loser.id)]["wallet"]  -= self.bet
-            save_db(self.data)
+            await save_db(self.data)
             for b in self.children: b.disabled = True
             return await interaction.response.edit_message(content=f"🏆 **{winner.display_name}** wins and takes **${self.bet:,}**!", view=self)
         if all(self.board):
@@ -1567,7 +1570,7 @@ class TTTView(discord.ui.View):
 
 @bot.command(aliases=["tictactoe"])
 async def ttt(ctx, member: discord.Member, amount: str):
-    data = get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    data = await get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     bet = parse_amount(amount, data[str(ctx.author.id)]["wallet"])
     if not bet or bet <= 0: return await ctx.send("❌ Invalid bet.")
     if bet > data[str(ctx.author.id)]["wallet"]: return await ctx.send(f"❌ {ctx.author.display_name} can't afford that.")
@@ -1978,7 +1981,7 @@ class ScratchView(discord.ui.View):
             self.done = True
             uid       = str(self.ctx.author.id)
             self.data[uid]["wallet"] += winner_val
-            save_db(self.data)
+            await save_db(self.data)
             for b in self.children:
                 if hasattr(b, "custom_id") and b.label == "🎴":
                     try:
@@ -2017,7 +2020,7 @@ async def buy(ctx, item: str = None):
     if item not in SHOP_ITEMS:
         return await ctx.send(f"❌ Item `{item}` not found. Use `.shop` to see available items.")
 
-    data      = get_db()
+    data      = await get_db()
     ensure_user(data, ctx.author.id)
     uid       = str(ctx.author.id)
     shop_item = SHOP_ITEMS[item]
@@ -2035,14 +2038,14 @@ async def buy(ctx, item: str = None):
         if duration == -1:
             data[uid]["booster_end"]        = float("inf")
             data[uid]["booster_multiplier"] = boost
-            save_db(data)
+            await save_db(data)
             return await ctx.send(f"♾️ Lifetime {boost}x XP Booster activated! Your XP is permanently boosted.")
         else:
             seconds     = duration * 3600
             current_end = data[uid].get("booster_end", 0)
             data[uid]["booster_end"]        = max(current_end, time.time()) + seconds
             data[uid]["booster_multiplier"] = boost
-            save_db(data)
+            await save_db(data)
             return await ctx.send(f"{shop_item['emoji']} {shop_item['name']} activated! {boost}x XP for {duration} hours.")
 
     # Guardian role
@@ -2051,11 +2054,11 @@ async def buy(ctx, item: str = None):
         role  = guild.get_role(GUARDIAN_ROLE_ID) if guild else None
         if not role:
             data[uid]["wallet"] += cost
-            save_db(data)
+            await save_db(data)
             return await ctx.send("❌ Guardian role not found. Contact an admin.")
         if role in ctx.author.roles:
             data[uid]["wallet"] += cost
-            save_db(data)
+            await save_db(data)
             return await ctx.send("❌ You already have the Guardian role.")
         try:
             await ctx.author.add_roles(role)
@@ -2064,12 +2067,12 @@ async def buy(ctx, item: str = None):
             await ctx.author.edit(nick=f"{strike}\u02da")
         except discord.Forbidden:
             pass
-        save_db(data)
+        await save_db(data)
         return await ctx.send(f"🗡️ You purchased the G̶u̶a̶r̶d̶i̶a̶n̶˚ role for ${cost:,}!")
 
     # Lottery tickets
     if item in ("bronze", "silver", "gold"):
-        save_db(data)
+        await save_db(data)
         embed = discord.Embed(
             title=f"{shop_item['emoji']} {shop_item['name']} — Scratch Card",
             description="Click all 9 boxes to reveal!\nMatch 3 of the same to win!",
@@ -2077,7 +2080,7 @@ async def buy(ctx, item: str = None):
         )
         return await ctx.send(embed=embed, view=ScratchView(ctx, item, data))
 
-    save_db(data)
+    await save_db(data)
 
 
 
@@ -2089,12 +2092,12 @@ async def buy(ctx, item: str = None):
 @commands.has_permissions(administrator=True)
 async def addmoney(ctx, member: discord.Member, amount: int, location: str = "wallet"):
     """Add or remove money. Use negative number to deduct. .addmoney @user 5000 wallet"""
-    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data = await get_db(); ensure_user(data, member.id); uid = str(member.id)
     loc  = location.lower()
     if loc not in ("wallet", "bank"):
         return await ctx.send("❌ Location must be `wallet` or `bank`.")
     data[uid][loc] = max(0, data[uid][loc] + amount)
-    save_db(data)
+    await save_db(data)
     action = "Added" if amount >= 0 else "Removed"
     await ctx.send(f"✅ {action} **${abs(amount):,}** {'to' if amount >= 0 else 'from'} {member.display_name}'s **{loc}**. New balance: **${data[uid][loc]:,}**")
 
@@ -2102,21 +2105,21 @@ async def addmoney(ctx, member: discord.Member, amount: int, location: str = "wa
 @commands.has_permissions(administrator=True)
 async def setmoney(ctx, member: discord.Member, amount: int, location: str = "wallet"):
     """Set exact money amount. .setmoney @user 10000 wallet"""
-    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data = await get_db(); ensure_user(data, member.id); uid = str(member.id)
     loc  = location.lower()
     if loc not in ("wallet", "bank"):
         return await ctx.send("❌ Location must be `wallet` or `bank`.")
     data[uid][loc] = max(0, amount)
-    save_db(data)
+    await save_db(data)
     await ctx.send(f"✅ Set {member.display_name}'s **{loc}** to **${amount:,}**.")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addxp(ctx, member: discord.Member, amount: int):
     """Add or remove XP. .addxp @user 500"""
-    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data = await get_db(); ensure_user(data, member.id); uid = str(member.id)
     data[uid]["xp"] = max(0, data[uid]["xp"] + amount)
-    save_db(data)
+    await save_db(data)
     action = "Added" if amount >= 0 else "Removed"
     await ctx.send(f"✅ {action} **{abs(amount)} XP** {'to' if amount >= 0 else 'from'} {member.display_name}. Current XP: **{data[uid]['xp']}**")
 
@@ -2126,19 +2129,19 @@ async def setlevel(ctx, member: discord.Member, level: int):
     """Set a user's level. .setlevel @user 10"""
     if level < 1:
         return await ctx.send("❌ Level must be at least 1.")
-    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data = await get_db(); ensure_user(data, member.id); uid = str(member.id)
     data[uid]["level"] = level
     data[uid]["xp"]    = 0
-    save_db(data)
+    await save_db(data)
     await ctx.send(f"✅ Set {member.display_name}'s level to **{level}**.")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addcredits(ctx, member: discord.Member, amount: int):
     """Add or remove credits. .addcredits @user 100"""
-    data = get_db(); ensure_user(data, member.id); uid = str(member.id)
+    data = await get_db(); ensure_user(data, member.id); uid = str(member.id)
     data[uid]["credits"] = max(0, data[uid]["credits"] + amount)
-    save_db(data)
+    await save_db(data)
     action = "Added" if amount >= 0 else "Removed"
     await ctx.send(f"✅ {action} **{abs(amount)} credits** {'to' if amount >= 0 else 'from'} {member.display_name}. Total: **{data[uid]['credits']:,}**")
 
@@ -2146,11 +2149,11 @@ async def addcredits(ctx, member: discord.Member, amount: int):
 @commands.has_permissions(administrator=True)
 async def resetuser(ctx, member: discord.Member):
     """Fully reset a user's data. .resetuser @user"""
-    data = get_db()
+    data = await get_db()
     uid  = str(member.id)
     if uid in data:
         del data[uid]
-    save_db(data)
+    await save_db(data)
     await ctx.send(f"🗑️ Reset all data for **{member.display_name}**.")
 
 @bot.command()
@@ -2158,7 +2161,7 @@ async def resetuser(ctx, member: discord.Member):
 async def userinfo(ctx, member: discord.Member = None):
     """View full data for a user. .userinfo @user"""
     t    = member or ctx.author
-    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    data = await get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     embed = discord.Embed(title=f"🔍 {t.display_name}'s Data", color=0x5865F2)
     embed.set_thumbnail(url=t.display_avatar.url)
     embed.add_field(name="💰 Economy",   value=f"Wallet: ${u['wallet']:,}\nBank: ${u['bank']:,}\nCredits: {u['credits']:,}", inline=True)
@@ -2174,7 +2177,7 @@ async def userinfo(ctx, member: discord.Member = None):
 @commands.has_permissions(administrator=True)
 async def serverinfo(ctx):
     """Show economy stats for the server."""
-    data  = get_db()
+    data  = await get_db()
     total = sum(u.get("wallet", 0) + u.get("bank", 0) for u in data.values())
     embed = discord.Embed(title="📊 Server Economy Stats", color=0x5865F2)
     embed.add_field(name="Registered Users",       value=f"{len(data):,}")
