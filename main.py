@@ -1727,9 +1727,10 @@ async def post_perks(channel):
     embed.add_field(
         name="✧ ━━━━━━━━━━━━━━━━━━ ✧\n👑 ﹒ 𝖂𝖊𝖊𝖐𝖑𝖞 𝕽𝖔𝖑𝖊𝖘",
         value=(
-            "**👸 Princess** — Top female chatter of the week\n"
-            "**🤴 Prince** — Top male chatter of the week\n"
-            "Awarded every Sunday at midnight to the most active members"
+            "**👸 Princess / 🤴 Prince** — Top chatters of the week\n"
+            "Awarded every Monday to the top users in <#1482802842900103311>\n\n"
+"**👸 Princess / 🤴 Prince** — Top chatters of the week\n"
+            "Awarded every Sunday to the top male/female chatters in <#1482802842900103311>"
         ),
         inline=False
     )
@@ -1800,6 +1801,229 @@ async def setupall(ctx, guidelines_channel: discord.TextChannel, profile_channel
     await post_guidelines(guidelines_channel)
     await post_profile(profile_channel)
     await ctx.send(f"✅ Guidelines posted in {guidelines_channel.mention} and profile in {profile_channel.mention}.")
+
+
+# ─────────────────────────────────────────────
+# SHOP SYSTEM
+# ─────────────────────────────────────────────
+
+GUARDIAN_ROLE_ID = 1483096681820983508
+
+SHOP_ITEMS = {
+    "xp2_4h":   {"name": "2x XP Booster [4h]",      "cost": 5_000,     "emoji": "⚡", "boost": 2, "duration": 4},
+    "xp2_10h":  {"name": "2x XP Booster [10h]",     "cost": 10_000,    "emoji": "⚡", "boost": 2, "duration": 10},
+    "xp2_24h":  {"name": "2x XP Booster [24h]",     "cost": 20_000,    "emoji": "⚡", "boost": 2, "duration": 24},
+    "xp3_24h":  {"name": "3x XP Booster [24h]",     "cost": 50_000,    "emoji": "🔥", "boost": 3, "duration": 24},
+    "xp2_life": {"name": "2x XP Booster [Life]",    "cost": 2_000_000, "emoji": "♾️", "boost": 2, "duration": -1},
+    "guardian": {"name": "Guardian Role",            "cost": 2_500_000, "emoji": "🗡️", "boost": 0, "duration": 0},
+    "bronze":   {"name": "Bronze Lottery Ticket",    "cost": 5_000,     "emoji": "🥉", "boost": 0, "duration": 0},
+    "silver":   {"name": "Silver Lottery Ticket",    "cost": 10_000,    "emoji": "🥈", "boost": 0, "duration": 0},
+    "gold":     {"name": "Gold Lottery Ticket",      "cost": 50_000,    "emoji": "🏆", "boost": 0, "duration": 0},
+}
+
+LOTTERY_PRIZES = {
+    "bronze": (10_000,  22_500),
+    "silver": (20_000,  45_000),
+    "gold":   (100_000, 225_000),
+}
+
+class ShopView(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+
+    def shop_embed(self):
+        embed = discord.Embed(
+            title="🛒  Hang Spot — Shop",
+            description="Spend your economy money on boosters, roles and lottery tickets!\nUse `.buy <item>` to purchase.",
+            color=0xFFD700
+        )
+        embed.add_field(
+            name="⚡ XP Boosters",
+            value=(
+                "`.buy xp2_4h`   — 2x XP Booster [4h]      — $5,000\n"
+                "`.buy xp2_10h`  — 2x XP Booster [10h]     — $10,000\n"
+                "`.buy xp2_24h`  — 2x XP Booster [24h]     — $20,000\n"
+                "`.buy xp3_24h`  — 3x XP Booster [24h]     — $50,000\n"
+                "`.buy xp2_life` — 2x XP Booster [♾️ Life] — $2,000,000"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🗡️ Roles",
+            value="`.buy guardian` — G̶u̶a̶r̶d̶i̶a̶n̶˚ Role — $2,500,000",
+            inline=False
+        )
+        embed.add_field(
+            name="🎰 Lottery Tickets",
+            value=(
+                "`.buy bronze` — 🥉 Bronze Ticket — $5,000   (win $10k-$22.5k)\n"
+                "`.buy silver` — 🥈 Silver Ticket — $10,000  (win $20k-$45k)\n"
+                "`.buy gold`   — 🏆 Gold Ticket   — $50,000  (win $100k-$225k)"
+            ),
+            inline=False
+        )
+        embed.set_footer(text="Match 3 of the same on a scratch card to win!")
+        return embed
+
+
+class ScratchView(discord.ui.View):
+    def __init__(self, ctx, ticket_type, data):
+        super().__init__(timeout=120)
+        self.ctx         = ctx
+        self.ticket_type = ticket_type
+        self.data        = data
+        self.revealed    = 0
+        self.grid        = self._generate_grid()
+        self.done        = False
+
+        for i in range(9):
+            btn = discord.ui.Button(
+                label="🎴",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"scratch_{i}",
+                row=i // 3
+            )
+            btn.callback = self.scratch
+            self.add_item(btn)
+
+    def _generate_grid(self):
+        min_prize, max_prize = LOTTERY_PRIZES[self.ticket_type]
+        base_values = [
+            min_prize,
+            int(min_prize * 1.5),
+            int(min_prize * 2),
+            int(min_prize * 2.5),
+            max_prize,
+        ]
+        grid = random.choices(base_values, k=9)
+        if random.random() < 0.35:
+            win_val   = random.choice(base_values)
+            positions = random.sample(range(9), 3)
+            for p in positions:
+                grid[p] = win_val
+        return grid
+
+    def _check_winner(self):
+        from collections import Counter
+        counts = Counter(self.grid)
+        for val, count in counts.items():
+            if count >= 3:
+                return val
+        return None
+
+    def _format_val(self, val):
+        if val >= 1_000_000:
+            return f"${val/1_000_000:.1f}M"
+        elif val >= 1_000:
+            return f"${val//1_000}K"
+        return f"${val}"
+
+    async def scratch(self, interaction: discord.Interaction):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("Not your ticket!", ephemeral=True)
+        if self.done:
+            return
+        idx = int(interaction.data["custom_id"].split("_")[1])
+        for b in self.children:
+            if hasattr(b, "custom_id") and b.custom_id == f"scratch_{idx}":
+                b.label    = self._format_val(self.grid[idx])
+                b.disabled = True
+                b.style    = discord.ButtonStyle.primary
+                self.revealed += 1
+                break
+        if self.revealed == 9:
+            self.done      = True
+            winner_val     = self._check_winner()
+            uid            = str(self.ctx.author.id)
+            for b in self.children:
+                b.disabled = True
+            if winner_val:
+                self.data[uid]["wallet"] += winner_val
+                save_db(self.data)
+                content = f"🎉 WINNER! You matched three {self._format_val(winner_val)} and won ${winner_val:,}!"
+            else:
+                content = "😔 No match this time. Better luck next time!"
+            return await interaction.response.edit_message(content=content, view=self)
+        await interaction.response.edit_message(view=self)
+
+
+@bot.command(aliases=["store"])
+async def shop(ctx):
+    view = ShopView(ctx)
+    await ctx.send(embed=view.shop_embed(), view=view)
+
+
+@bot.command()
+async def buy(ctx, item: str = None):
+    if not item:
+        return await ctx.send("❌ Specify an item. Use `.shop` to see available items.")
+    item = item.lower()
+    if item not in SHOP_ITEMS:
+        return await ctx.send(f"❌ Item `{item}` not found. Use `.shop` to see available items.")
+
+    data      = get_db()
+    ensure_user(data, ctx.author.id)
+    uid       = str(ctx.author.id)
+    shop_item = SHOP_ITEMS[item]
+    cost      = shop_item["cost"]
+
+    if data[uid]["wallet"] < cost:
+        return await ctx.send(f"❌ You need ${cost:,} in your wallet. You have ${data[uid]['wallet']:,}.")
+
+    data[uid]["wallet"] -= cost
+
+    # XP Boosters
+    if item.startswith("xp"):
+        duration = shop_item["duration"]
+        boost    = shop_item["boost"]
+        if duration == -1:
+            data[uid]["booster_end"]        = float("inf")
+            data[uid]["booster_multiplier"] = boost
+            save_db(data)
+            return await ctx.send(f"♾️ Lifetime {boost}x XP Booster activated! Your XP is permanently boosted.")
+        else:
+            seconds     = duration * 3600
+            current_end = data[uid].get("booster_end", 0)
+            data[uid]["booster_end"]        = max(current_end, time.time()) + seconds
+            data[uid]["booster_multiplier"] = boost
+            save_db(data)
+            return await ctx.send(f"{shop_item['emoji']} {shop_item['name']} activated! {boost}x XP for {duration} hours.")
+
+    # Guardian role
+    if item == "guardian":
+        guild = ctx.guild
+        role  = guild.get_role(GUARDIAN_ROLE_ID) if guild else None
+        if not role:
+            data[uid]["wallet"] += cost
+            save_db(data)
+            return await ctx.send("❌ Guardian role not found. Contact an admin.")
+        if role in ctx.author.roles:
+            data[uid]["wallet"] += cost
+            save_db(data)
+            return await ctx.send("❌ You already have the Guardian role.")
+        try:
+            await ctx.author.add_roles(role)
+            current_nick = ctx.author.nick or ctx.author.name
+            strike       = "".join(f"{c}\u0336" for c in current_nick)
+            await ctx.author.edit(nick=f"{strike}\u02da")
+        except discord.Forbidden:
+            pass
+        save_db(data)
+        return await ctx.send(f"🗡️ You purchased the G̶u̶a̶r̶d̶i̶a̶n̶˚ role for ${cost:,}!")
+
+    # Lottery tickets
+    if item in ("bronze", "silver", "gold"):
+        save_db(data)
+        embed = discord.Embed(
+            title=f"{shop_item['emoji']} {shop_item['name']} — Scratch Card",
+            description="Click all 9 boxes to reveal!\nMatch 3 of the same to win!",
+            color=0xFFD700
+        )
+        return await ctx.send(embed=embed, view=ScratchView(ctx, item, data))
+
+    save_db(data)
+
 
 # ─────────────────────────────────────────────
 # START
