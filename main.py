@@ -505,7 +505,6 @@ async def update_leaderboards():
                 msg = await voice_channel.send(embed=embed)
                 lb_message_ids["voice"] = msg.id
 
-@tasks.loop(hours=168)  # Every 7 days (weekly reset)
 @tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=datetime.timezone.utc))  # midnight UTC
 async def weekly_reset():
     # Only run on Sundays (weekday 6)
