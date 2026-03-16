@@ -506,17 +506,107 @@ async def update_leaderboards():
                 lb_message_ids["voice"] = msg.id
 
 @tasks.loop(hours=168)  # Every 7 days (weekly reset)
+@tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=datetime.timezone.utc))  # midnight UTC
 async def weekly_reset():
+    # Only run on Sundays (weekday 6)
+    if datetime.datetime.utcnow().weekday() != 6:
+        return
+
     data = get_db()
+
+    PRINCE_ROLE_ID    = 1483096301007667332
+    PRINCESS_ROLE_ID  = 1483096038989627564
+
+    for guild in bot.guilds:
+        prince_role   = guild.get_role(PRINCE_ROLE_ID)
+        princess_role = guild.get_role(PRINCESS_ROLE_ID)
+        male_role     = discord.utils.get(guild.roles, name="Male")
+        female_role   = discord.utils.get(guild.roles, name="Female")
+
+        # --- Remove old Prince/Princess roles and reset nicknames ---
+        if prince_role:
+            for member in prince_role.members:
+                try:
+                    await member.remove_roles(prince_role)
+                    # Reset nickname - remove the 🤴 emoji
+                    if member.nick and "🤴" in member.nick:
+                        new_nick = member.nick.replace("🤴", "").strip()
+                        await member.edit(nick=new_nick if new_nick else None)
+                except discord.Forbidden:
+                    pass
+
+        if princess_role:
+            for member in princess_role.members:
+                try:
+                    await member.remove_roles(princess_role)
+                    # Reset nickname - remove the 👸 emoji
+                    if member.nick and "👸" in member.nick:
+                        new_nick = member.nick.replace("👸", "").strip()
+                        await member.edit(nick=new_nick if new_nick else None)
+                except discord.Forbidden:
+                    pass
+
+        # --- Find top male and female chatters ---
+        top_male   = None
+        top_female = None
+        top_male_msgs   = 0
+        top_female_msgs = 0
+
+        for uid, u in data.items():
+            weekly_msgs = u.get("weekly_messages", 0)
+            if weekly_msgs == 0:
+                continue
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+            if male_role and male_role in member.roles:
+                if weekly_msgs > top_male_msgs:
+                    top_male_msgs = weekly_msgs
+                    top_male = member
+            elif female_role and female_role in member.roles:
+                if weekly_msgs > top_female_msgs:
+                    top_female_msgs = weekly_msgs
+                    top_female = member
+
+        # --- Assign Prince ---
+        if top_male and prince_role:
+            try:
+                await top_male.add_roles(prince_role)
+                current_nick = top_male.nick or top_male.name
+                await top_male.edit(nick=f"{current_nick} 🤴")
+            except discord.Forbidden:
+                pass
+
+        # --- Assign Princess ---
+        if top_female and princess_role:
+            try:
+                await top_female.add_roles(princess_role)
+                current_nick = top_female.nick or top_female.name
+                await top_female.edit(nick=f"{current_nick} 👸")
+            except discord.Forbidden:
+                pass
+
+        # --- Announce in levels channel ---
+        levels_channel = bot.get_channel(LEVELS_ID)
+        if levels_channel:
+            embed = discord.Embed(
+                title="👑 Weekly Royalty",
+                description="The weekly Prince & Princess have been crowned!",
+                color=0xFFD700
+            )
+            if top_male:
+                embed.add_field(name="🤴 Prince", value=f"{top_male.mention} — **{top_male_msgs:,}** messages", inline=True)
+            if top_female:
+                embed.add_field(name="👸 Princess", value=f"{top_female.mention} — **{top_female_msgs:,}** messages", inline=True)
+            await levels_channel.send(embed=embed)
+
+    # --- Reset weekly stats ---
     for uid in data:
-        data[uid]["weekly_messages"]     = 0
+        data[uid]["weekly_messages"]      = 0
         data[uid]["weekly_voice_minutes"] = 0
     save_db(data)
-    print("✅ Weekly leaderboard reset complete.")
+    print("✅ Weekly reset complete — Prince & Princess assigned.")
 
-# ─────────────────────────────────────────────
-# EVENTS
-# ─────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online | Prefixes: . and +")
@@ -1543,26 +1633,82 @@ async def post_guidelines(channel):
 
 async def post_perks(channel):
     embed = discord.Embed(
-        title="💎  Hang Spot — Perks & Rewards",
-        description="Here's everything you can unlock by supporting the server or leveling up!",
+        description=(
+            "✧ ━━━━━━━━━━━━━━━━━━ ✧\n"
+            "👑 ﹒ 𝕯𝖔𝖓𝖆𝖙𝖔𝖗 𝕽𝖔𝖑𝖊𝖘 & 𝕻𝖊𝖗𝖐𝖘\n"
+            "✧ ━━━━━━━━━━━━━━━━━━ ✧"
+        ),
         color=0xFFD700
     )
+
     embed.add_field(
-        name="👑 Donator Tiers",
+        name="𝕸𝖔𝖓𝖆𝖗𝖈𝖍 ✧",
         value=(
-            "**( 🜏 ) 𝕸𝖔𝖓𝖆𝖗𝖈𝖍** `#800020` — The Leviathan Cross *(Power & Alchemy)*\n"
-            "└ Economy boost • Custom role • Audit log access • Secret VC\n\n"
-            "**( ⛤ ) 𝕺𝖛𝖊𝖗𝖑𝖔𝖗𝖉** `#4B0082` — The Pentagram *(Supernatural Authority)*\n"
-            "└ Massive economy currency • Trial Moderator status • Custom role\n\n"
-            "**( ♱ ) 𝕬𝖗𝖎𝖘𝖙𝖔𝖈𝖗𝖆𝖙** `#D4AF37` — The Flared Cross *(Noble Heritage)*\n"
-            "└ Economy boost • Color panel access • Exclusive channel\n\n"
-            "**( ⚚ ) 𝖁𝖆𝖓𝖌𝖚𝖆𝖗𝖉** `#2F4F4F` — The Caduceus *(The Guardian)*\n"
-            "└ Economy starter pack • Exclusive badge"
+            "*all perks are lifetime*\n"
+            "✦ all subscription perks + roles\n"
+            "✦ special 𝕸𝖔𝖓𝖆𝖗𝖈𝖍 icon next to your name\n"
+            "✦ trial moderator role (able to be promoted)\n"
+            "✦ $15,000,000 currency in economy\n"
+            "✦ access to audit logs + punishment immunity\n"
+            "✦ ability to join full vcs + secret monarch vc\n"
+            "✦ may request custom perks / roles\n"
+            "🥀 to gift, buy or claim perks make a ticket"
         ),
         inline=False
     )
+
     embed.add_field(
-        name="📊 Level Milestones",
+        name="𝕺𝖛𝖊𝖗𝖑𝖔𝖗𝖉 ✦",
+        value=(
+            "*the _ represents a new perk for the role*\n"
+            "✦ all obtainable sub perks\n"
+            "✦ special 𝕺𝖛𝖊𝖗𝖑𝖔𝖗𝖉 icon next to your name\n"
+            "✦ access to special color menu\n"
+            "✦ $2,500,000 currency in economy\n"
+            "✦ _ custom role (12 users)\n"
+            "✦ _ ability to join full vcs\n"
+            "✦ _ ability to use avatar / banner cmd\n"
+            "✦ _ may request other perks\n"
+            "🥀 to gift this role or claim perks make a ticket"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="𝕬𝖗𝖎𝖘𝖙𝖔𝖈𝖗𝖆𝖙 ⚜️",
+        value=(
+            "*the _ represents a new perk for the role*\n"
+            "✦ special 𝕬𝖗𝖎𝖘𝖙𝖔𝖈𝖗𝖆𝖙 icon next to your name\n"
+            "✦ access to special color menu\n"
+            "✦ send images & gifs in chats\n"
+            "✦ send voice messages in chats\n"
+            "✦ $500,000 currency in economy\n"
+            "✦ _ ability to use snipe command\n"
+            "✦ _ custom role (5 users)\n"
+            "✦ _ external emoji + sticker perms\n"
+            "✦ _ soundboard + external soundboard perms\n"
+            "🥀 to gift this role or claim perks make a ticket"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="𝖁𝖆𝖓𝖌𝖚𝖆𝖗𝖉 ⚔️",
+        value=(
+            "*the _ represents a new perk for the role*\n"
+            "✦ special 𝖁𝖆𝖓𝖌𝖚𝖆𝖗𝖉 icon next to your name\n"
+            "✦ access to special color menu\n"
+            "✦ send images & gifs in chats\n"
+            "✦ send voice messages in chats\n"
+            "✦ $150,000 currency in economy\n"
+            "✦ _ ability to use snipe command\n"
+            "🥀 to gift this role or claim perks make a ticket"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="✧ ━━━━━━━━━━━━━━━━━━ ✧\n📊 ﹒ 𝕷𝖊𝖛𝖊𝖑 𝕸𝖎𝖑𝖊𝖘𝖙𝖔𝖓𝖊𝖘",
         value=(
             "**Lvl 5** — 📹 Streaming / Camera\n"
             "**Lvl 10** — 🖼️ Media Channel Posting\n"
@@ -1578,15 +1724,19 @@ async def post_perks(channel):
         ),
         inline=False
     )
+
     embed.add_field(
-        name="🌟 Weekly / Subscription Roles",
+        name="✧ ━━━━━━━━━━━━━━━━━━ ✧\n👑 ﹒ 𝖂𝖊𝖊𝖐𝖑𝖞 𝕽𝖔𝖑𝖊𝖘",
         value=(
-            "**👑 Prince & Princess** — Weekly top chatters\n"
-            "**🦅 Godfather** — Weekly top voice user"
+            "**👸 Princess / 🤴 Prince** — Top chatters of the week\n"
+            "Awarded every Monday to the top users in <#1482802842900103311>\n\n"
+            "**🦅 Godfather** — Top voice user of the week\n"
+            "Awarded every Monday to the #1 voice channel user"
         ),
         inline=False
     )
-    embed.set_footer(text="Use .level to check your progress • Contact staff to donate")
+
+    embed.set_footer(text="✧ ━━━━━━━━━━━━━━━━━━ ✧\nUse .level to track your progress • Make a ticket to donate")
     await channel.send(embed=embed)
 
 async def post_profile(channel):
