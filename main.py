@@ -6,7 +6,7 @@ import datetime
 import asyncio
 from dotenv import load_dotenv
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import aiohttp
 
 load_dotenv()
@@ -15,11 +15,30 @@ TOKEN = os.getenv("TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix=[".", "+"], intents=intents, help_command=None)
 
 DB_FILE = "users.json"
 
+# Channel IDs
+GUIDELINES_ID   = 1482796651344040099
+ANNOUNCE_ID     = 1482802123308531813
+PERKS_ID        = 1482802267680804964
+PROFILE_ID      = 1482802311578259497
+SUPPORT_ID      = 1482802401844006932
+FAME_ID         = 1482802962198823093
+CHAT_LB_ID      = 1482804897631043777
+VOICE_LB_ID     = 1482804934331338772
+LEVELS_ID       = 1482804659813875823
+HANGSPOT_ID     = 1482802842900103311
+
+# Tracked channels for chat leaderboard (hangspot + chillspot)
+TRACKED_CHAT_CHANNELS = {1482802842900103311, 1482802872900103312}  # update chillspot ID if different
+
+# ─────────────────────────────────────────────
+# DATABASE
+# ─────────────────────────────────────────────
 def get_db():
     try:
         with open(DB_FILE, "r") as f:
@@ -46,6 +65,10 @@ def ensure_user(data, user_id):
         "partner": None, "marry_date": 0,
         "inbox": [],
         "afk": None,
+        "weekly_messages": 0,
+        "voice_minutes": 0,
+        "weekly_voice_minutes": 0,
+        "voice_join_time": None,
     }
     for k, v in defaults.items():
         if k not in data[uid]:
@@ -79,7 +102,11 @@ def add_xp(data, user_id, amount):
 snipe_cache  = {}
 afk_cache    = {}
 msg_cooldown = {}
+voice_sessions = {}  # user_id -> join timestamp
 
+# ─────────────────────────────────────────────
+# COLOR ROLES
+# ─────────────────────────────────────────────
 COLOR_ROLES = {
     "Scarlet Fury":    "🔴",
     "Fire Pop":        "🟠",
@@ -96,6 +123,9 @@ COLOR_ROLES = {
     "Ocean Depth":     "🌊",
 }
 
+# ─────────────────────────────────────────────
+# GIF HELPER
+# ─────────────────────────────────────────────
 async def fetch_gif(action: str) -> str:
     try:
         async with aiohttp.ClientSession() as s:
@@ -131,26 +161,24 @@ async def send_action(ctx, action: str, member: discord.Member, color: discord.C
     await ctx.send(embed=embed)
 
 # ─────────────────────────────────────────────
-# PERSISTENT VIEWS (defined before on_ready)
+# PERSISTENT VIEWS
 # ─────────────────────────────────────────────
-
 class GuidelinesView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Get your roles here", style=discord.ButtonStyle.primary, emoji="🌹", custom_id="goto_profile")
     async def profile_btn(self, interaction, btn):
-        await interaction.response.send_message(
-            "Head over to <#1482802311578259497> to get your roles!",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"Head over to <#1482802311578259497> to get your roles!", ephemeral=True)
 
     @discord.ui.button(label="Server Perks", style=discord.ButtonStyle.secondary, emoji="🎲", custom_id="goto_perks")
     async def perks_btn(self, interaction, btn):
-        await interaction.response.send_message(
-            "Check out <#1482802267680804964> to see all server perks!",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"Check out <#1482802267680804964> to see all server perks!", ephemeral=True)
+
+    @discord.ui.button(label="Done reading? Check out 💬・hangspot →", style=discord.ButtonStyle.success, custom_id="goto_hangspot")
+    async def hangspot_btn(self, interaction, btn):
+        await interaction.response.send_message(f"Head over to <#1482802842900103311>! 🎉", ephemeral=True)
+
 
 class GenderView(discord.ui.View):
     def __init__(self):
@@ -161,7 +189,7 @@ class GenderView(discord.ui.View):
         role      = discord.utils.get(interaction.guild.roles, name="Female")
         male_role = discord.utils.get(interaction.guild.roles, name="Male")
         if not role:
-            return await interaction.response.send_message("❌ `Female` role not found. Ask an admin to create it.", ephemeral=True)
+            return await interaction.response.send_message("❌ `Female` role not found.", ephemeral=True)
         if role in interaction.user.roles:
             await interaction.user.remove_roles(role)
             return await interaction.response.send_message("🌸 Removed your **Female** role.", ephemeral=True)
@@ -175,7 +203,7 @@ class GenderView(discord.ui.View):
         role        = discord.utils.get(interaction.guild.roles, name="Male")
         female_role = discord.utils.get(interaction.guild.roles, name="Female")
         if not role:
-            return await interaction.response.send_message("❌ `Male` role not found. Ask an admin to create it.", ephemeral=True)
+            return await interaction.response.send_message("❌ `Male` role not found.", ephemeral=True)
         if role in interaction.user.roles:
             await interaction.user.remove_roles(role)
             return await interaction.response.send_message("💙 Removed your **Male** role.", ephemeral=True)
@@ -184,44 +212,103 @@ class GenderView(discord.ui.View):
         await interaction.user.add_roles(role)
         await interaction.response.send_message("💙 You now have the **Male** role!", ephemeral=True)
 
+
 class ColorSelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label=name, emoji=emoji, value=name)
             for name, emoji in COLOR_ROLES.items()
         ]
-        super().__init__(
-            placeholder="🎨 Choose your color...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            custom_id="color_select"
-        )
+        super().__init__(placeholder="🎨 Choose your color...", min_values=1, max_values=1, options=options, custom_id="color_select")
 
     async def callback(self, interaction: discord.Interaction):
         chosen = self.values[0]
-        roles_to_remove = [
-            discord.utils.get(interaction.guild.roles, name=name)
-            for name in COLOR_ROLES
-        ]
+        roles_to_remove = [discord.utils.get(interaction.guild.roles, name=name) for name in COLOR_ROLES]
         roles_to_remove = [r for r in roles_to_remove if r and r in interaction.user.roles]
         if roles_to_remove:
             await interaction.user.remove_roles(*roles_to_remove)
         new_role = discord.utils.get(interaction.guild.roles, name=chosen)
         if not new_role:
-            return await interaction.response.send_message(
-                f"❌ Role `{chosen}` not found. Ask an admin to create it.", ephemeral=True
-            )
+            return await interaction.response.send_message(f"❌ Role `{chosen}` not found. Ask an admin to create it.", ephemeral=True)
         await interaction.user.add_roles(new_role)
-        emoji = COLOR_ROLES[chosen]
-        await interaction.response.send_message(
-            f"{emoji} You now have the **{chosen}** color role!", ephemeral=True
-        )
+        await interaction.response.send_message(f"{COLOR_ROLES[chosen]} You now have the **{chosen}** color role!", ephemeral=True)
+
 
 class ColorView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(ColorSelect())
+
+
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎫 General Support", style=discord.ButtonStyle.primary, custom_id="open_ticket_general")
+    async def open_general(self, interaction, btn):
+        await create_ticket(interaction, "general")
+
+    @discord.ui.button(label="🚨 Report a User", style=discord.ButtonStyle.danger, custom_id="open_ticket_report")
+    async def open_report(self, interaction, btn):
+        await create_ticket(interaction, "report")
+
+
+async def create_ticket(interaction: discord.Interaction, ticket_type: str):
+    guild  = interaction.guild
+    user   = interaction.user
+    prefix = "ticket" if ticket_type == "general" else "report"
+    existing = discord.utils.get(guild.text_channels, name=f"{prefix}-{user.name.lower()}")
+    if existing:
+        return await interaction.response.send_message(f"❌ You already have an open ticket: {existing.mention}", ephemeral=True)
+
+    staff_role = discord.utils.get(guild.roles, name="Staff")
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user:               discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        guild.me:           discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    category = discord.utils.get(guild.categories, name="🎫 Tickets")
+    if not category:
+        category = await guild.create_category("🎫 Tickets")
+
+    channel = await guild.create_text_channel(
+        name=f"{prefix}-{user.name.lower()}",
+        category=category,
+        overwrites=overwrites
+    )
+
+    if ticket_type == "general":
+        title = "🎫 General Support"
+        desc  = f"Welcome {user.mention}!\n\nPlease describe your issue and a staff member will assist you shortly."
+        color = 0xFF85A1
+    else:
+        title = "🚨 Report a User"
+        desc  = (
+            f"Welcome {user.mention}!\n\nPlease provide:\n"
+            "**1.** The username of the person you're reporting\n"
+            "**2.** What happened\n"
+            "**3.** Any evidence (screenshots etc.)"
+        )
+        color = 0xFF0000
+
+    embed = discord.Embed(title=title, description=desc, color=color)
+    embed.set_footer(text="Hang Spot Support • Staff will be with you shortly")
+    await channel.send(embed=embed, view=CloseTicketView())
+    await interaction.response.send_message(f"✅ Your ticket has been created: {channel.mention}", ephemeral=True)
+
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket")
+    async def close_ticket(self, interaction, btn):
+        await interaction.response.send_message("🔒 Closing ticket in 5 seconds...")
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
 
 # ─────────────────────────────────────────────
 # HELP MENU
@@ -248,20 +335,20 @@ class HelpView(discord.ui.View):
 
     def general_embed(self):
         cmds = [
-            ("`.credits`",                           "View your credits"),
-            ("`.charms [member]`",                   "View charm count"),
-            ("`.leaderboard [category] [page]`",     "View leaderboards (economy / leveling / charm / lootcrate / blacktea)"),
-            ("`.boosters`",                          "View active boosters"),
-            ("`.rank [member]`",                     "View a member's rank & XP"),
-            ("`.prestige`",                          "Prestige at Level 50 to reset & gain prestige"),
-            ("`.blacktea`",                          "Start a word-unscramble Blacktea game"),
-            ("`+charm <member>`",                    "Give a charm to someone"),
-            ("`.messages [member]`",                 "Check message count per channel"),
-            ("`.snipe`",                             "View last deleted/edited message"),
-            ("`.afk [reason]`",                      "Set yourself as AFK"),
-            ("`.partner [member]`",                  "View marriage details"),
-            ("`.marry <member>`",                    "Propose marriage"),
-            ("`.divorce`",                           "Divorce your spouse"),
+            ("`.credits`",                       "View your credits"),
+            ("`.charms [member]`",               "View charm count"),
+            ("`.leaderboard [category] [page]`", "View leaderboards"),
+            ("`.boosters`",                      "View active boosters"),
+            ("`.rank [member]`",                 "View rank & XP"),
+            ("`.prestige`",                      "Prestige at Level 50"),
+            ("`.blacktea`",                      "Word unscramble game"),
+            ("`+charm <member>`",                "Give a charm"),
+            ("`.messages [member]`",             "Message count per channel"),
+            ("`.snipe`",                         "Last deleted/edited message"),
+            ("`.afk [reason]`",                  "Set yourself as AFK"),
+            ("`.partner [member]`",              "View marriage details"),
+            ("`.marry <member>`",                "Propose marriage"),
+            ("`.divorce`",                       "Divorce your spouse"),
         ]
         embed = discord.Embed(title="🔹 General Commands", color=0x3498DB)
         embed.description = "\n".join(f"**{c}** — {d}" for c, d in cmds)
@@ -269,22 +356,22 @@ class HelpView(discord.ui.View):
 
     def economy_embed(self):
         cmds = [
-            ("`.balance [member]`",          "Check balance"),
-            ("`.deposit <amount>`",          "Wallet → Bank"),
-            ("`.withdraw <amount>`",         "Bank → Wallet"),
-            ("`.give <member> <amount>`",    "Give money to someone"),
-            ("`.work`",                      "Work for money (36s cooldown)"),
-            ("`.daily`",                     "Daily reward (24h cooldown)"),
-            ("`.weekly`",                    "Weekly reward (7d cooldown)"),
-            ("`.rob <member>`",              "Rob someone's wallet"),
-            ("`.cooldowns [member]`",        "Check all cooldowns"),
-            ("`.inbox [page]`",              "View your inbox"),
-            ("`.coinflip <amount> <h|t>`",   "Flip a coin"),
-            ("`.blackjack <amount>`",        "Play blackjack"),
-            ("`.roulette <amount> <type>`",  "Bet on roulette"),
-            ("`.rps <member> <amount>`",     "Rock Paper Scissors"),
-            ("`.duel <member> <amount>`",    "50/50 coin duel"),
-            ("`.ttt <member> <amount>`",     "Tic-Tac-Toe duel"),
+            ("`.balance [member]`",         "Check balance"),
+            ("`.deposit <amount>`",         "Wallet → Bank"),
+            ("`.withdraw <amount>`",        "Bank → Wallet"),
+            ("`.give <member> <amount>`",   "Give money"),
+            ("`.work`",                     "Work for money"),
+            ("`.daily`",                    "Daily reward"),
+            ("`.weekly`",                   "Weekly reward"),
+            ("`.rob <member>`",             "Rob someone"),
+            ("`.cooldowns [member]`",       "Check cooldowns"),
+            ("`.inbox [page]`",             "View inbox"),
+            ("`.coinflip <amount> <h|t>`",  "Flip a coin"),
+            ("`.blackjack <amount>`",       "Play blackjack"),
+            ("`.roulette <amount> <type>`", "Play roulette"),
+            ("`.rps <member> <amount>`",    "Rock Paper Scissors"),
+            ("`.duel <member> <amount>`",   "50/50 duel"),
+            ("`.ttt <member> <amount>`",    "Tic-Tac-Toe"),
         ]
         embed = discord.Embed(title="💰 Economy Commands", color=0xF1C40F)
         embed.description = "\n".join(f"**{c}** — {d}" for c, d in cmds)
@@ -292,21 +379,21 @@ class HelpView(discord.ui.View):
 
     def fun_embed(self):
         cmds = [
-            ("`.hug <member>`",              "Hug someone"),
-            ("`.kiss <member>`",             "Kiss someone"),
-            ("`.dance <member>`",            "Dance with someone"),
-            ("`.handhold <member>`",         "Hold hands"),
-            ("`.cry <member>`",              "Cry together"),
-            ("`.bite <member>`",             "Bite someone"),
-            ("`.poke <member>`",             "Poke someone"),
-            ("`.lick <member>`",             "Lick someone"),
-            ("`.highfive <member>`",         "High-five someone"),
-            ("`.slap <member>`",             "Slap someone"),
-            ("`.cuddle <member>`",           "Cuddle someone"),
-            ("`.kill <member>`",             "Kill someone dramatically"),
-            ("`.bestie <member> [member]`",  "Bestie compatibility %"),
-            ("`.aura [member]`",             "Check your aura power"),
-            ("`.ship <member> [member]`",    "Ship two members"),
+            ("`.hug <member>`",             "Hug someone"),
+            ("`.kiss <member>`",            "Kiss someone"),
+            ("`.dance <member>`",           "Dance with someone"),
+            ("`.handhold <member>`",        "Hold hands"),
+            ("`.cry <member>`",             "Cry together"),
+            ("`.bite <member>`",            "Bite someone"),
+            ("`.poke <member>`",            "Poke someone"),
+            ("`.lick <member>`",            "Lick someone"),
+            ("`.highfive <member>`",        "High-five someone"),
+            ("`.slap <member>`",            "Slap someone"),
+            ("`.cuddle <member>`",          "Cuddle someone"),
+            ("`.kill <member>`",            "Kill someone"),
+            ("`.bestie <member> [member]`", "Bestie compatibility"),
+            ("`.aura [member]`",            "Check aura"),
+            ("`.ship <member> [member]`",   "Ship two members"),
         ]
         embed = discord.Embed(title="🎭 Fun Commands", color=0xE91E63)
         embed.description = "\n".join(f"**{c}** — {d}" for c, d in cmds)
@@ -329,15 +416,117 @@ class HelpView(discord.ui.View):
         await interaction.response.edit_message(embed=self.main_embed(), view=self)
 
 # ─────────────────────────────────────────────
+# LEADERBOARD HELPERS
+# ─────────────────────────────────────────────
+def build_chat_lb_embed(data):
+    embed = discord.Embed(
+        title="💬 Weekly Chat Leaderboard",
+        description="Top 10 most active chatters in **hangspot** & **chillspot** this week!",
+        color=0xFF85A1
+    )
+    sorted_users = sorted(data.items(), key=lambda x: x[1].get("weekly_messages", 0), reverse=True)[:10]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = []
+    for i, (uid, u) in enumerate(sorted_users, start=1):
+        badge = medals.get(i, f"**{i}.**")
+        lines.append(f"{badge} <@{uid}> — **{u.get('weekly_messages', 0):,}** messages")
+    embed.description += "\n\n" + ("\n".join(lines) if lines else "No data yet.")
+    embed.set_footer(text=f"Resets every Monday • Last updated: {datetime.datetime.utcnow().strftime('%b %d, %Y %H:%M')} UTC")
+    return embed
+
+def build_voice_lb_embed(data):
+    embed = discord.Embed(
+        title="🔊 Weekly Voice Leaderboard",
+        description="Top 10 most active voice users this week!",
+        color=0x9B59B6
+    )
+    sorted_users = sorted(data.items(), key=lambda x: x[1].get("weekly_voice_minutes", 0), reverse=True)[:10]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = []
+    for i, (uid, u) in enumerate(sorted_users, start=1):
+        badge  = medals.get(i, f"**{i}.**")
+        mins   = u.get("weekly_voice_minutes", 0)
+        hours  = mins // 60
+        minutes = mins % 60
+        lines.append(f"{badge} <@{uid}> — **{hours}h {minutes}m**")
+    embed.description += "\n\n" + ("\n".join(lines) if lines else "No data yet.")
+    embed.set_footer(text=f"Resets every Monday • Last updated: {datetime.datetime.utcnow().strftime('%b %d, %Y %H:%M')} UTC")
+    return embed
+
+# Stored message IDs for leaderboard embeds
+lb_message_ids = {"chat": None, "voice": None}
+
+# ─────────────────────────────────────────────
+# BACKGROUND TASKS
+# ─────────────────────────────────────────────
+@tasks.loop(minutes=5)
+async def update_leaderboards():
+    data = get_db()
+    # Update chat leaderboard
+    chat_channel = bot.get_channel(CHAT_LB_ID)
+    if chat_channel:
+        embed = build_chat_lb_embed(data)
+        if lb_message_ids["chat"]:
+            try:
+                msg = await chat_channel.fetch_message(lb_message_ids["chat"])
+                await msg.edit(embed=embed)
+            except Exception:
+                msg = await chat_channel.send(embed=embed)
+                lb_message_ids["chat"] = msg.id
+        else:
+            # Find existing bot message
+            async for msg in chat_channel.history(limit=10):
+                if msg.author == bot.user:
+                    lb_message_ids["chat"] = msg.id
+                    await msg.edit(embed=embed)
+                    break
+            else:
+                msg = await chat_channel.send(embed=embed)
+                lb_message_ids["chat"] = msg.id
+
+    # Update voice leaderboard
+    voice_channel = bot.get_channel(VOICE_LB_ID)
+    if voice_channel:
+        embed = build_voice_lb_embed(data)
+        if lb_message_ids["voice"]:
+            try:
+                msg = await voice_channel.fetch_message(lb_message_ids["voice"])
+                await msg.edit(embed=embed)
+            except Exception:
+                msg = await voice_channel.send(embed=embed)
+                lb_message_ids["voice"] = msg.id
+        else:
+            async for msg in voice_channel.history(limit=10):
+                if msg.author == bot.user:
+                    lb_message_ids["voice"] = msg.id
+                    await msg.edit(embed=embed)
+                    break
+            else:
+                msg = await voice_channel.send(embed=embed)
+                lb_message_ids["voice"] = msg.id
+
+@tasks.loop(hours=168)  # Every 7 days (weekly reset)
+async def weekly_reset():
+    data = get_db()
+    for uid in data:
+        data[uid]["weekly_messages"]     = 0
+        data[uid]["weekly_voice_minutes"] = 0
+    save_db(data)
+    print("✅ Weekly leaderboard reset complete.")
+
+# ─────────────────────────────────────────────
 # EVENTS
 # ─────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} is online | Prefixes: . and +")
-    # Register persistent views so buttons work after restart
     bot.add_view(GuidelinesView())
     bot.add_view(GenderView())
     bot.add_view(ColorView())
+    bot.add_view(TicketView())
+    bot.add_view(CloseTicketView())
+    update_leaderboards.start()
+    weekly_reset.start()
 
 @bot.event
 async def on_message(message):
@@ -346,7 +535,7 @@ async def on_message(message):
 
     uid  = str(message.author.id)
     now  = time.time()
-    chan = str(message.channel.id)
+    chan = message.channel.id
 
     if uid in afk_cache:
         del afk_cache[uid]
@@ -369,18 +558,145 @@ async def on_message(message):
     if uid not in msg_cooldown or now - msg_cooldown[uid] > 30:
         data = get_db(); ensure_user(data, message.author.id)
         data[uid]["credits"] = data[uid].get("credits", 0) + 5
-        data[uid]["messages"][chan] = data[uid]["messages"].get(chan, 0) + 1
+        data[uid]["messages"][str(chan)] = data[uid]["messages"].get(str(chan), 0) + 1
+
+        # Weekly chat leaderboard tracking
+        if chan in TRACKED_CHAT_CHANNELS:
+            data[uid]["weekly_messages"] = data[uid].get("weekly_messages", 0) + 1
+
         if add_xp(data, message.author.id, 20):
-            try:
-                await message.channel.send(
-                    f"🎊 {message.author.mention} leveled up to **Level {data[uid]['level']}**!"
+            new_level = data[uid]["level"]
+            # Post level up in levels channel
+            levels_channel = bot.get_channel(LEVELS_ID)
+            if levels_channel:
+                rewards = get_level_rewards(new_level)
+                embed = discord.Embed(
+                    title="🎊 Level Up!",
+                    description=(
+                        f"{message.author.mention} leveled up to **Level {new_level}**! 🎉\n\n"
+                        f"{rewards}"
+                    ),
+                    color=0xFFD700
                 )
-            except Exception:
-                pass
+                embed.set_thumbnail(url=message.author.display_avatar.url)
+                await levels_channel.send(embed=embed)
+                await assign_milestone_roles(message.author, new_level)
+            else:
+                try:
+                    await message.channel.send(f"🎊 {message.author.mention} leveled up to **Level {new_level}**!")
+                except Exception:
+                    pass
+
         save_db(data)
         msg_cooldown[uid] = now
 
     await bot.process_commands(message)
+
+def get_level_rewards(level):
+    rewards = {
+        5:   "🎁 **Reward:** Unlocked Streaming / Camera in voice channels!",
+        10:  "🎁 **Reward:** Unlocked Media Channel Posting!",
+        20:  "🎁 **Reward:** Unlocked External Emojis!",
+        30:  "🎁 **Reward:** Unlocked GIFs!",
+        40:  "🎁 **Reward:** Unlocked Color Panel!",
+        50:  "🎁 **Reward:** Unlocked External Stickers!",
+        60:  "🎁 **Reward:** Unlocked Post Images Anywhere!",
+        70:  "🎁 **Reward:** +5 Credits per charm given!",
+        80:  "🎁 **Reward:** Unlocked Soundboards & Voice Messages!",
+        90:  "🎁 **Reward:** Unlocked External Sounds!",
+        100: "🎁 **Reward:** Unlocked **PRESTIGE**! Use `.prestige` to reset and earn a prestige badge!",
+    }
+    return rewards.get(level, f"🎁 **Reward:** +500 Credits bonus!")
+
+
+# Milestone role IDs
+MILESTONE_ROLES = {
+    5:  1482901111852630260,
+    10: 1482903152821801113,
+    20: 1482903265174753523,
+    30: 1482903519437656166,
+    50: 1482903618263973938,
+    60: 1482903765869789244,
+    80: 1482904289490763776,
+    90: 1482904501760430150,
+}
+
+async def assign_milestone_roles(member: discord.Member, level: int):
+    for req_lvl, role_id in MILESTONE_ROLES.items():
+        role = member.guild.get_role(role_id)
+        if not role:
+            continue
+        if level >= req_lvl and role not in member.roles:
+            try:
+                await member.add_roles(role, reason=f'Reached Level {req_lvl}')
+            except discord.Forbidden:
+                pass
+
+@bot.event
+
+async def on_voice_state_update(member, before, after):
+    uid = str(member.id)
+    # User joined a voice channel
+    if before.channel is None and after.channel is not None:
+        voice_sessions[uid] = time.time()
+    # User left a voice channel
+    elif before.channel is not None and after.channel is None:
+        if uid in voice_sessions:
+            minutes = int((time.time() - voice_sessions[uid]) / 60)
+            del voice_sessions[uid]
+            data = get_db(); ensure_user(data, member.id)
+            data[uid]["voice_minutes"]        = data[uid].get("voice_minutes", 0) + minutes
+            data[uid]["weekly_voice_minutes"] = data[uid].get("weekly_voice_minutes", 0) + minutes
+            save_db(data)
+
+# ─────────────────────────────────────────────
+# FRAKTUR NICKNAME SYSTEM
+# ─────────────────────────────────────────────
+FRAKTUR_MAP = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+    "𝔬𝔭𝔮𝔯𝔰𝔱𝔲𝔳𝔴𝔵𝔶𝔷𝔸𝔹𝔺𝔻𝔼𝔽𝔾𝔿𝕀𝕁𝕂𝕃𝕄𝕅𝕬𝕭𝕮𝕯𝕰𝕱𝕲𝕳𝕴𝕵𝕶𝕷𝕸𝕹𝕺𝕻𝕼𝕽𝕾𝕿𝖀𝖁𝖂𝖃𝖄𝖅"
+)
+
+DONATOR_ROLES = {
+    1482893794356494346: '✧',   # Monarch
+    1482893965123649566: '✦',   # Overlord
+    1482894038502871050: '⚜️',  # Aristocrat
+    1482894119092224081: '⚔️',  # Vanguard
+}
+
+def to_fraktur(name: str) -> str:
+    return name.translate(FRAKTUR_MAP)[:28]
+
+@bot.event
+async def on_member_update(before, after):
+    if before.roles == after.roles:
+        return
+    gained = set(after.roles) - set(before.roles)
+    lost   = set(before.roles) - set(after.roles)
+    for role in gained:
+        if role.id in DONATOR_ROLES:
+            symbol   = DONATOR_ROLES[role.id]
+            new_nick = f'{to_fraktur(after.display_name)} {symbol}'
+            try:
+                await after.edit(nick=new_nick)
+            except discord.Forbidden:
+                pass
+            return
+    for role in lost:
+        if role.id in DONATOR_ROLES:
+            remaining = [r for r in after.roles if r.id in DONATOR_ROLES]
+            if remaining:
+                symbol   = DONATOR_ROLES[remaining[0].id]
+                new_nick = f'{to_fraktur(after.display_name)} {symbol}'
+            else:
+                new_nick = None
+            try:
+                await after.edit(nick=new_nick)
+            except discord.Forbidden:
+                pass
+            return
+
+
 
 @bot.event
 async def on_message_delete(message):
@@ -440,11 +756,7 @@ async def credits(ctx):
 async def charms(ctx, member: discord.Member = None):
     t = member or ctx.author
     data = get_db(); ensure_user(data, t.id)
-    embed = discord.Embed(
-        title=f"✨ {t.display_name}'s Charms",
-        description=f"**{data[str(t.id)]['charms']:,}** charms",
-        color=0xFF69B4
-    )
+    embed = discord.Embed(title=f"✨ {t.display_name}'s Charms", description=f"**{data[str(t.id)]['charms']:,}** charms", color=0xFF69B4)
     await ctx.send(embed=embed)
 
 @bot.command(name="charm")
@@ -465,9 +777,7 @@ async def give_charm(ctx, member: discord.Member):
 @bot.command(aliases=["lb"])
 async def leaderboard(ctx, category: str = "economy", page: int = 1):
     data = get_db()
-    page = max(1, page)
-    per  = 10
-    offset = (page - 1) * per
+    page = max(1, page); per = 10; offset = (page - 1) * per
     categories = {
         "economy":   ("💰 Economy",    lambda x: x[1].get("wallet",0)+x[1].get("bank",0), lambda v: f"${v:,}"),
         "leveling":  ("📊 Leveling",   lambda x: (x[1].get("level",1), x[1].get("xp",0)), lambda v: f"Lvl {v[0]} ({v[1]} XP)"),
@@ -509,13 +819,8 @@ async def boosters(ctx):
 @bot.command()
 async def rank(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id)
-    u = data[str(t.id)]
-    sorted_users = sorted(
-        data.items(),
-        key=lambda x: (x[1].get("prestige",0), x[1].get("level",1), x[1].get("xp",0)),
-        reverse=True
-    )
+    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
+    sorted_users = sorted(data.items(), key=lambda x: (x[1].get("prestige",0), x[1].get("level",1), x[1].get("xp",0)), reverse=True)
     pos    = next((i+1 for i,(uid,_) in enumerate(sorted_users) if uid == str(t.id)), "?")
     needed = u["level"] * 500
     filled = int((u["xp"] / needed) * 20) if needed else 0
@@ -576,8 +881,7 @@ async def afk(ctx, *, reason: str = None):
 @bot.command()
 async def partner(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id)
-    u = data[str(t.id)]
+    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     embed = discord.Embed(title=f"💍 {t.display_name}'s Marriage", color=0xFF69B4)
     if u.get("partner"):
         date = datetime.datetime.fromtimestamp(u["marry_date"]).strftime("%B %d, %Y")
@@ -614,9 +918,7 @@ async def marry(ctx, member: discord.Member):
             d[str(ctx.author.id)]["marry_date"] = now
             d[str(member.id)]["marry_date"]     = now
             save_db(d)
-            await interaction.response.edit_message(
-                content=f"💍 **{ctx.author.display_name}** and **{member.display_name}** are now married! 🎊", view=None
-            )
+            await interaction.response.edit_message(content=f"💍 **{ctx.author.display_name}** and **{member.display_name}** are now married! 🎊", view=None)
 
         @discord.ui.button(label="💔 Decline", style=discord.ButtonStyle.danger)
         async def no(self, interaction, btn):
@@ -640,32 +942,24 @@ async def divorce(ctx):
     await ctx.send("💔 You are now divorced.")
 
 # ─────────────────────────────────────────────
-# LEVEL / PROGRESS COMMAND
+# LEVEL COMMAND
 # ─────────────────────────────────────────────
 class LevelView(discord.ui.View):
     def __init__(self, ctx, target, data):
         super().__init__(timeout=120)
-        self.ctx    = ctx
-        self.target = target
-        self.data   = data
-        self.notif_server = False
-        self.notif_dm     = False
+        self.ctx = ctx; self.target = target; self.data = data
+        self.notif_server = False; self.notif_dm = False
 
     def progress_embed(self):
-        u        = self.data[str(self.target.id)]
-        lvl      = u["level"]
-        xp       = u["xp"]
-        needed   = lvl * 500
-        filled   = int((xp / needed) * 20) if needed else 0
-        bar      = "█" * filled + "░" * (20 - filled)
-        mult     = get_multiplier(self.data, self.target.id)
+        u = self.data[str(self.target.id)]
+        lvl = u["level"]; xp = u["xp"]
+        needed = lvl * 500
+        filled = int((xp / needed) * 20) if needed else 0
+        bar    = "█" * filled + "░" * (20 - filled)
+        mult   = get_multiplier(self.data, self.target.id)
         prestige = u.get("prestige", 0)
-        sorted_users = sorted(
-            self.data.items(),
-            key=lambda x: (x[1].get("prestige", 0), x[1].get("level", 1), x[1].get("xp", 0)),
-            reverse=True
-        )
-        rank = next((i + 1 for i, (uid, _) in enumerate(sorted_users) if uid == str(self.target.id)), "?")
+        sorted_users = sorted(self.data.items(), key=lambda x: (x[1].get("prestige",0), x[1].get("level",1), x[1].get("xp",0)), reverse=True)
+        rank = next((i+1 for i,(uid,_) in enumerate(sorted_users) if uid == str(self.target.id)), "?")
         milestones = [
             (5,   "📹 Streaming / Camera"),
             (10,  "🖼️ Media Channel Posting"),
@@ -679,26 +973,17 @@ class LevelView(discord.ui.View):
             (90,  "🎵 External Sounds"),
             (100, "⭐ Prestige"),
         ]
-        milestone_lines = []
-        for req_lvl, name in milestones:
-            if lvl >= req_lvl:
-                milestone_lines.append(f"✅ {name} *(Lvl {req_lvl})*")
-            else:
-                milestone_lines.append(f"❌ {name} *(Lvl {req_lvl})*")
+        lines = [f"{'✅' if lvl >= r else '❌'} {n} *(Lvl {r})*" for r, n in milestones]
         embed = discord.Embed(title=f"📊 {self.target.display_name}'s Progress", color=0x5865F2)
         embed.set_thumbnail(url=self.target.display_avatar.url)
-        embed.add_field(
-            name="⚡ Level & XP",
-            value=(
-                f"**Level:** {lvl}  •  **Prestige:** {prestige}\n"
-                f"**XP Multiplier:** {mult}x\n"
-                f"**Global Rank:** #{rank}\n"
-                f"**Next Level:** {needed - xp:,} XP needed\n"
-                f"`{bar}` {xp}/{needed}"
-            ),
-            inline=False
-        )
-        embed.add_field(name="🏆 Milestones", value="\n".join(milestone_lines), inline=False)
+        embed.add_field(name="⚡ Level & XP", value=(
+            f"**Level:** {lvl}  •  **Prestige:** {prestige}\n"
+            f"**XP Multiplier:** {mult}x\n"
+            f"**Global Rank:** #{rank}\n"
+            f"**Next Level:** {needed - xp:,} XP needed\n"
+            f"`{bar}` {xp}/{needed}"
+        ), inline=False)
+        embed.add_field(name="🏆 Milestones", value="\n".join(lines), inline=False)
         embed.set_footer(text="💡 Earn XP by chatting in text channels or being active in VC!")
         return embed
 
@@ -710,7 +995,7 @@ class LevelView(discord.ui.View):
         return embed
 
     def boosters_embed(self):
-        u   = self.data[str(self.target.id)]
+        u = self.data[str(self.target.id)]
         rem = u.get("booster_end", 0) - time.time()
         embed = discord.Embed(title=f"🚀 {self.target.display_name}'s Boosters", color=0x9B59B6)
         if rem > 0:
@@ -741,10 +1026,7 @@ class LevelView(discord.ui.View):
     async def equip_btn(self, interaction, btn):
         if interaction.user != self.ctx.author:
             return await interaction.response.send_message("Not your menu!", ephemeral=True)
-        await interaction.response.send_message(
-            "🏷️ Go to **Server Settings → Members → Your Profile** to equip your server tag.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("🏷️ Go to **Server Settings → Members → Your Profile** to equip your server tag.", ephemeral=True)
 
     @discord.ui.button(label="🔔 Server Notifs", style=discord.ButtonStyle.secondary, row=1)
     async def server_notif_btn(self, interaction, btn):
@@ -772,10 +1054,9 @@ async def progress(ctx, member: discord.Member = None):
     await ctx.send(embed=view.progress_embed(), view=view)
 
 # ─────────────────────────────────────────────
-# BLACKTEA GAME
+# BLACKTEA
 # ─────────────────────────────────────────────
 blacktea_sessions = {}
-
 BLACKTEA_WORDS = [
     "apple","brave","crane","dream","eagle","flame","grace","heart","ivory","jewel",
     "knack","lemon","magic","night","ocean","piano","queen","river","storm","tiger",
@@ -788,30 +1069,22 @@ async def blacktea(ctx):
     cid = str(ctx.channel.id)
     if cid in blacktea_sessions:
         return await ctx.send("⚠️ A Blacktea game is already running here.")
-    word      = random.choice(BLACKTEA_WORDS)
-    letters   = list(word); random.shuffle(letters)
+    word = random.choice(BLACKTEA_WORDS)
+    letters = list(word); random.shuffle(letters)
     scrambled = " ".join(letters).upper()
     blacktea_sessions[cid] = {"word": word}
-    embed = discord.Embed(
-        title="🍵 Blacktea — Word Unscramble",
-        description=f"Unscramble this word:\n\n**`{scrambled}`**\n\nType your answer in chat! **30 seconds.**",
-        color=0x8B4513
-    )
+    embed = discord.Embed(title="🍵 Blacktea — Word Unscramble", description=f"Unscramble:\n\n**`{scrambled}`**\n\n**30 seconds.**", color=0x8B4513)
     embed.set_footer(text=f"Started by {ctx.author.display_name}")
     await ctx.send(embed=embed)
-
-    def check(m):
-        return m.channel == ctx.channel and not m.bot
-
+    def check(m): return m.channel == ctx.channel and not m.bot
     try:
         while True:
             msg = await bot.wait_for("message", timeout=30.0, check=check)
             if msg.content.lower().strip() == word:
                 data = get_db(); ensure_user(data, msg.author.id)
                 data[str(msg.author.id)]["blacktea_wins"] += 1
-                save_db(data)
-                del blacktea_sessions[cid]
-                return await ctx.send(f"🎉 **{msg.author.display_name}** got it! The word was **{word}**! (+1 Blacktea win)")
+                save_db(data); del blacktea_sessions[cid]
+                return await ctx.send(f"🎉 **{msg.author.display_name}** got it! The word was **{word}**!")
     except asyncio.TimeoutError:
         blacktea_sessions.pop(cid, None)
         await ctx.send(f"⏱️ Time's up! The word was **{word}**.")
@@ -822,8 +1095,7 @@ async def blacktea(ctx):
 @bot.command(aliases=["bal"])
 async def balance(ctx, member: discord.Member = None):
     t = member or ctx.author
-    data = get_db(); ensure_user(data, t.id)
-    u = data[str(t.id)]
+    data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     embed = discord.Embed(title=f"💸 {t.display_name}'s Balance", color=0x2ECC71)
     embed.set_thumbnail(url=t.display_avatar.url)
     embed.add_field(name="👛 Wallet", value=f"${u['wallet']:,}",           inline=True)
@@ -838,8 +1110,7 @@ async def deposit(ctx, amount: str):
     if not val or val <= 0 or val > data[uid]["wallet"]:
         return await ctx.send("❌ Invalid amount or not enough in wallet.")
     data[uid]["wallet"] -= val; data[uid]["bank"] += val
-    save_db(data)
-    await ctx.send(f"✅ Deposited **${val:,}** to your bank.")
+    save_db(data); await ctx.send(f"✅ Deposited **${val:,}** to your bank.")
 
 @bot.command(aliases=["with"])
 async def withdraw(ctx, amount: str):
@@ -848,8 +1119,7 @@ async def withdraw(ctx, amount: str):
     if not val or val <= 0 or val > data[uid]["bank"]:
         return await ctx.send("❌ Invalid amount or not enough in bank.")
     data[uid]["bank"] -= val; data[uid]["wallet"] += val
-    save_db(data)
-    await ctx.send(f"🏧 Withdrew **${val:,}** to your wallet.")
+    save_db(data); await ctx.send(f"🏧 Withdrew **${val:,}** to your wallet.")
 
 @bot.command(aliases=["pay"])
 async def give(ctx, member: discord.Member, amount: str):
@@ -861,8 +1131,7 @@ async def give(ctx, member: discord.Member, amount: str):
         return await ctx.send("❌ Invalid amount.")
     data[str(ctx.author.id)]["wallet"] -= val
     data[str(member.id)]["wallet"]     += val
-    save_db(data)
-    await ctx.send(f"💸 **{ctx.author.display_name}** gave **${val:,}** to **{member.display_name}**.")
+    save_db(data); await ctx.send(f"💸 **{ctx.author.display_name}** gave **${val:,}** to **{member.display_name}**.")
 
 @bot.command()
 @commands.cooldown(1, 36, commands.BucketType.user)
@@ -870,41 +1139,31 @@ async def work(ctx):
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     jobs = ["programmer","chef","taxi driver","streamer","delivery driver","barista","teacher","nurse"]
     pay  = random.randint(500, 1500) * get_multiplier(data, ctx.author.id)
-    data[uid]["wallet"] += pay
-    data[uid]["last_work"] = time.time()
-    save_db(data)
-    await ctx.send(f"💼 You worked as a **{random.choice(jobs)}** and earned **${pay:,}**!")
+    data[uid]["wallet"] += pay; data[uid]["last_work"] = time.time()
+    save_db(data); await ctx.send(f"💼 You worked as a **{random.choice(jobs)}** and earned **${pay:,}**!")
 
 @bot.command()
 @commands.cooldown(1, 86400, commands.BucketType.user)
 async def daily(ctx):
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     reward = 2500 * get_multiplier(data, ctx.author.id)
-    data[uid]["wallet"]    += reward
-    data[uid]["last_daily"] = time.time()
-    save_db(data)
-    await ctx.send(f"🎁 Daily claimed! **+${reward:,}**")
+    data[uid]["wallet"] += reward; data[uid]["last_daily"] = time.time()
+    save_db(data); await ctx.send(f"🎁 Daily claimed! **+${reward:,}**")
 
 @bot.command()
 @commands.cooldown(1, 604800, commands.BucketType.user)
 async def weekly(ctx):
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     reward = 15000 * get_multiplier(data, ctx.author.id)
-    data[uid]["wallet"]     += reward
-    data[uid]["last_weekly"] = time.time()
-    save_db(data)
-    await ctx.send(f"🎁 Weekly claimed! **+${reward:,}**")
+    data[uid]["wallet"] += reward; data[uid]["last_weekly"] = time.time()
+    save_db(data); await ctx.send(f"🎁 Weekly claimed! **+${reward:,}**")
 
 @bot.command()
 async def cooldowns(ctx, member: discord.Member = None):
     t = member or ctx.author
     data = get_db(); ensure_user(data, t.id); u = data[str(t.id)]
     now = time.time()
-
-    def fmt(remaining):
-        if remaining <= 0: return "✅ Ready"
-        return f"⏱️ {str(datetime.timedelta(seconds=int(remaining)))}"
-
+    def fmt(r): return "✅ Ready" if r <= 0 else f"⏱️ {str(datetime.timedelta(seconds=int(r)))}"
     embed = discord.Embed(title=f"⏱️ {t.display_name}'s Cooldowns", color=0xE67E22)
     embed.add_field(name="💼 Work",   value=fmt(36     - (now - u.get("last_work",  0))), inline=True)
     embed.add_field(name="🎁 Daily",  value=fmt(86400  - (now - u.get("last_daily", 0))), inline=True)
@@ -916,35 +1175,26 @@ async def cooldowns(ctx, member: discord.Member = None):
 async def inbox(ctx, page: int = 1):
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     msgs = data[uid].get("inbox", [])
-    if not msgs:
-        return await ctx.send("📭 Your inbox is empty.")
-    per   = 5; page = max(1, page)
-    total = max(1, (len(msgs)+per-1)//per)
-    page  = min(page, total)
-    slice_ = msgs[(page-1)*per : page*per]
+    if not msgs: return await ctx.send("📭 Your inbox is empty.")
+    per = 5; page = max(1, min(page, max(1,(len(msgs)+per-1)//per)))
+    slice_ = msgs[(page-1)*per:page*per]
     embed = discord.Embed(title="📬 Your Inbox", color=0x3498DB)
     for i, m in enumerate(slice_, start=(page-1)*per+1):
         embed.add_field(name=f"#{i} — {m.get('from','System')}", value=m.get("text","…"), inline=False)
-    embed.set_footer(text=f"Page {page}/{total}")
     await ctx.send(embed=embed)
 
 @bot.command()
 async def rob(ctx, member: discord.Member):
-    if member == ctx.author:
-        return await ctx.send("❌ You can't rob yourself.")
-    data = get_db()
-    ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    if member == ctx.author: return await ctx.send("❌ You can't rob yourself.")
+    data = get_db(); ensure_user(data, ctx.author.id); ensure_user(data, member.id)
     uid = str(ctx.author.id); tid = str(member.id)
     cd_left = 7200 - (time.time() - data[uid].get("last_rob", 0))
-    if cd_left > 0:
-        return await ctx.send(f"⏱️ Rob cooldown! **{str(datetime.timedelta(seconds=int(cd_left)))}** remaining.")
-    if data[tid]["wallet"] < 500:
-        return await ctx.send("❌ They don't have enough in their wallet (need $500+).")
+    if cd_left > 0: return await ctx.send(f"⏱️ Rob cooldown! **{str(datetime.timedelta(seconds=int(cd_left)))}** remaining.")
+    if data[tid]["wallet"] < 500: return await ctx.send("❌ They don't have enough (need $500+).")
     data[uid]["last_rob"] = time.time()
     if random.randint(1, 100) <= 45:
         stolen = random.randint(100, max(100, int(data[tid]["wallet"] * 0.3)))
-        data[uid]["wallet"] += stolen
-        data[tid]["wallet"] -= stolen
+        data[uid]["wallet"] += stolen; data[tid]["wallet"] -= stolen
         await ctx.send(f"🥷 Success! Stole **${stolen:,}** from {member.display_name}.")
     else:
         fine = min(1000, data[uid]["wallet"])
@@ -958,12 +1208,10 @@ async def rob(ctx, member: discord.Member):
 @bot.command(aliases=["cf"])
 async def coinflip(ctx, amount: str, side: str):
     side = side.lower()
-    if side not in ("heads","tails","h","t"):
-        return await ctx.send("❌ Choose `heads` or `tails`.")
+    if side not in ("heads","tails","h","t"): return await ctx.send("❌ Choose `heads` or `tails`.")
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
-    if not bet or bet <= 0 or bet > data[uid]["wallet"]:
-        return await ctx.send("❌ Invalid bet or insufficient funds.")
+    if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
     data[uid]["wallet"] -= bet
     result = random.choice(["heads","tails"])
     if side[0] == result[0]:
@@ -977,7 +1225,6 @@ async def coinflip(ctx, amount: str, side: str):
 class BlackjackView(discord.ui.View):
     VALS  = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
     SUITS = ["♠","♥","♦","♣"]
-
     def __init__(self, ctx, bet, data):
         super().__init__(timeout=120)
         self.ctx = ctx; self.bet = bet; self.data = data
@@ -985,38 +1232,30 @@ class BlackjackView(discord.ui.View):
         random.shuffle(deck); self.deck = deck
         self.player = [self.deck.pop(), self.deck.pop()]
         self.dealer = [self.deck.pop(), self.deck.pop()]
-
     def val(self, card):
         v = card[:-1]
         if v in ("J","Q","K"): return 10
-        if v == "A":           return 11
+        if v == "A": return 11
         return int(v)
-
     def total(self, hand):
-        t    = sum(self.val(c) for c in hand)
+        t = sum(self.val(c) for c in hand)
         aces = sum(1 for c in hand if c[:-1]=="A")
         while t > 21 and aces: t -= 10; aces -= 1
         return t
-
     def build_embed(self, ended=False, note=""):
         pt = self.total(self.player); dt = self.total(self.dealer)
         e  = discord.Embed(title="🃏 Blackjack", color=0x2ECC71)
-        dealer_show = "  ".join(self.dealer) if ended else f"{self.dealer[0]}  🂠"
-        e.add_field(name=f"Dealer {'('+str(dt)+')' if ended else ''}", value=dealer_show, inline=False)
+        e.add_field(name=f"Dealer {'('+str(dt)+')' if ended else ''}", value="  ".join(self.dealer) if ended else f"{self.dealer[0]}  🂠", inline=False)
         e.add_field(name=f"You ({pt})", value="  ".join(self.player), inline=False)
         e.add_field(name="Bet", value=f"${self.bet:,}", inline=True)
         if note: e.set_footer(text=note)
         return e
-
     async def resolve(self, interaction, status):
-        uid  = str(self.ctx.author.id)
-        mult = get_multiplier(self.data, self.ctx.author.id)
+        uid = str(self.ctx.author.id); mult = get_multiplier(self.data, self.ctx.author.id)
         if status == "win":
-            win = self.bet * mult
-            self.data[uid]["wallet"] += self.bet + win; note = f"🏆 You win! +${win:,}"
+            win = self.bet * mult; self.data[uid]["wallet"] += self.bet + win; note = f"🏆 You win! +${win:,}"
         elif status == "blackjack":
-            win = int(self.bet * 1.5)
-            self.data[uid]["wallet"] += self.bet + win; note = f"🃏 Blackjack! +${win:,}"
+            win = int(self.bet * 1.5); self.data[uid]["wallet"] += self.bet + win; note = f"🃏 Blackjack! +${win:,}"
         elif status == "push":
             self.data[uid]["wallet"] += self.bet; note = "🤝 Push — bet returned."
         else:
@@ -1024,74 +1263,61 @@ class BlackjackView(discord.ui.View):
         save_db(self.data)
         for c in self.children: c.disabled = True
         await interaction.response.edit_message(embed=self.build_embed(ended=True, note=note), view=self)
-
-    @discord.ui.button(label="Hit",   style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
     async def hit(self, interaction, btn):
-        if interaction.user != self.ctx.author:
-            return await interaction.response.send_message("Not your game!", ephemeral=True)
-        self.player.append(self.deck.pop())
-        pt = self.total(self.player)
+        if interaction.user != self.ctx.author: return await interaction.response.send_message("Not your game!", ephemeral=True)
+        self.player.append(self.deck.pop()); pt = self.total(self.player)
         if pt > 21: return await self.resolve(interaction, "lose")
         if pt == 21: return await self.stand_logic(interaction)
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
     async def stand(self, interaction, btn):
-        if interaction.user != self.ctx.author:
-            return await interaction.response.send_message("Not your game!", ephemeral=True)
+        if interaction.user != self.ctx.author: return await interaction.response.send_message("Not your game!", ephemeral=True)
         await self.stand_logic(interaction)
-
     async def stand_logic(self, interaction):
-        while self.total(self.dealer) < 17:
-            self.dealer.append(self.deck.pop())
+        while self.total(self.dealer) < 17: self.dealer.append(self.deck.pop())
         p, d = self.total(self.player), self.total(self.dealer)
-        if d > 21 or p > d: status = "win"
-        elif p == d:         status = "push"
-        else:                status = "lose"
+        status = "win" if (d > 21 or p > d) else ("push" if p == d else "lose")
         await self.resolve(interaction, status)
 
 @bot.command(aliases=["bj"])
 async def blackjack(ctx, amount: str):
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
-    if not bet or bet <= 0 or bet > data[uid]["wallet"]:
-        return await ctx.send("❌ Invalid bet.")
+    if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
     data[uid]["wallet"] -= bet; save_db(data)
     view = BlackjackView(ctx, bet, data)
     if view.total(view.player) == 21:
         win = int(bet * 1.5); data[uid]["wallet"] += bet + win; save_db(data)
-        em = view.build_embed(ended=True, note=f"🃏 Blackjack! +${win:,}")
-        return await ctx.send(embed=em)
+        return await ctx.send(embed=view.build_embed(ended=True, note=f"🃏 Blackjack! +${win:,}"))
     await ctx.send(embed=view.build_embed(), view=view)
 
 _REDS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 ROULETTE_BETS = {
-    "red":    (lambda n: n in _REDS,               2),
+    "red":    (lambda n: n in _REDS, 2),
     "black":  (lambda n: n != 0 and n not in _REDS, 2),
-    "even":   (lambda n: n != 0 and n%2==0,        2),
-    "odd":    (lambda n: n%2==1,                   2),
-    "low":    (lambda n: 1<=n<=18,                 2),
-    "high":   (lambda n: 19<=n<=36,                2),
-    "dozen1": (lambda n: 1<=n<=12,                 3),
-    "dozen2": (lambda n: 13<=n<=24,                3),
-    "dozen3": (lambda n: 25<=n<=36,                3),
+    "even":   (lambda n: n != 0 and n%2==0, 2),
+    "odd":    (lambda n: n%2==1, 2),
+    "low":    (lambda n: 1<=n<=18, 2),
+    "high":   (lambda n: 19<=n<=36, 2),
+    "dozen1": (lambda n: 1<=n<=12, 3),
+    "dozen2": (lambda n: 13<=n<=24, 3),
+    "dozen3": (lambda n: 25<=n<=36, 3),
 }
 
 @bot.command()
 async def roulette(ctx, amount: str, bet_type: str):
     bt = bet_type.lower()
-    if bt not in ROULETTE_BETS:
-        return await ctx.send(f"❌ Types: {', '.join(f'`{k}`' for k in ROULETTE_BETS)}")
+    if bt not in ROULETTE_BETS: return await ctx.send(f"❌ Types: {', '.join(f'`{k}`' for k in ROULETTE_BETS)}")
     data = get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
-    if not bet or bet <= 0 or bet > data[uid]["wallet"]:
-        return await ctx.send("❌ Invalid bet.")
+    if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
     data[uid]["wallet"] -= bet
     spin = random.randint(0, 36)
     icon = "🔴" if spin in _REDS else ("🟩" if spin == 0 else "⚫")
     check_fn, mult = ROULETTE_BETS[bt]
     embed = discord.Embed(title="🎡 Roulette", color=0xC0392B)
-    embed.add_field(name="Spin",     value=f"{icon} **{spin}**", inline=True)
+    embed.add_field(name="Spin", value=f"{icon} **{spin}**", inline=True)
     embed.add_field(name="Your Bet", value=f"`{bt}` — ${bet:,}", inline=True)
     if check_fn(spin):
         win = bet * (mult - 1) * get_multiplier(data, ctx.author.id)
@@ -1108,41 +1334,34 @@ class RPSView(discord.ui.View):
         self.ctx = ctx; self.challenger = ctx.author; self.opponent = opponent
         self.bet = bet; self.data = data
         self.choices = {ctx.author.id: None, opponent.id: None}
-
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction, btn):
-        if interaction.user != self.opponent:
-            return await interaction.response.send_message("Not your challenge!", ephemeral=True)
+        if interaction.user != self.opponent: return await interaction.response.send_message("Not your challenge!", ephemeral=True)
         self.clear_items()
         for c in ["Rock","Paper","Scissors"]:
             b = discord.ui.Button(label=c, custom_id=c.lower()); b.callback = self.pick; self.add_item(b)
         await interaction.response.edit_message(content="⚔️ Both players pick your move!", view=self)
-
     @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction, btn):
-        if interaction.user != self.opponent:
-            return await interaction.response.send_message("Not your challenge!", ephemeral=True)
+        if interaction.user != self.opponent: return await interaction.response.send_message("Not your challenge!", ephemeral=True)
         await interaction.response.edit_message(content="❌ Duel declined.", view=None)
-
     async def pick(self, interaction):
         if interaction.user.id not in self.choices: return
-        if self.choices[interaction.user.id]:
-            return await interaction.response.send_message("Already picked!", ephemeral=True)
+        if self.choices[interaction.user.id]: return await interaction.response.send_message("Already picked!", ephemeral=True)
         self.choices[interaction.user.id] = interaction.data["custom_id"]
         await interaction.response.send_message(f"You picked **{interaction.data['custom_id']}**!", ephemeral=True)
         if all(v for v in self.choices.values()):
             beats = {"rock":"scissors","paper":"rock","scissors":"paper"}
             c, o = self.choices[self.challenger.id], self.choices[self.opponent.id]
-            if c == o:
-                result = "🤝 Draw! Bets returned."
+            if c == o: result = "🤝 Draw! Bets returned."
             elif beats[c] == o:
                 self.data[str(self.challenger.id)]["wallet"] += self.bet
                 self.data[str(self.opponent.id)]["wallet"]   -= self.bet
-                result = f"🏆 **{self.challenger.display_name}** wins **${self.bet:,}**! ({c} > {o})"
+                result = f"🏆 **{self.challenger.display_name}** wins **${self.bet:,}**!"
             else:
                 self.data[str(self.opponent.id)]["wallet"]   += self.bet
                 self.data[str(self.challenger.id)]["wallet"] -= self.bet
-                result = f"🏆 **{self.opponent.display_name}** wins **${self.bet:,}**! ({o} > {c})"
+                result = f"🏆 **{self.opponent.display_name}** wins **${self.bet:,}**!"
             save_db(self.data)
             await interaction.message.edit(content=result, view=None)
 
@@ -1160,24 +1379,18 @@ class DuelView(discord.ui.View):
         super().__init__(timeout=60)
         self.ctx = ctx; self.challenger = ctx.author; self.opponent = opponent
         self.bet = bet; self.data = data
-
     @discord.ui.button(label="⚔️ Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction, btn):
-        if interaction.user != self.opponent:
-            return await interaction.response.send_message("Not your duel!", ephemeral=True)
+        if interaction.user != self.opponent: return await interaction.response.send_message("Not your duel!", ephemeral=True)
         winner = random.choice([self.challenger, self.opponent])
         loser  = self.opponent if winner == self.challenger else self.challenger
         self.data[str(winner.id)]["wallet"] += self.bet
         self.data[str(loser.id)]["wallet"]  -= self.bet
         save_db(self.data)
-        await interaction.response.edit_message(
-            content=f"⚔️ **{winner.display_name}** wins the duel and takes **${self.bet:,}**!", view=None
-        )
-
+        await interaction.response.edit_message(content=f"⚔️ **{winner.display_name}** wins and takes **${self.bet:,}**!", view=None)
     @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction, btn):
-        if interaction.user != self.opponent:
-            return await interaction.response.send_message("Not your duel!", ephemeral=True)
+        if interaction.user != self.opponent: return await interaction.response.send_message("Not your duel!", ephemeral=True)
         await interaction.response.edit_message(content="❌ Duel declined.", view=None)
 
 @bot.command()
@@ -1199,29 +1412,21 @@ class TTTView(discord.ui.View):
         ab.callback = self.do_accept; self.add_item(ab)
         db = discord.ui.Button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id="ttt_decline")
         db.callback = self.do_decline; self.add_item(db)
-
     async def do_accept(self, interaction):
-        if interaction.user != self.opponent:
-            return await interaction.response.send_message("Not your game!", ephemeral=True)
+        if interaction.user != self.opponent: return await interaction.response.send_message("Not your game!", ephemeral=True)
         self.accepted = True; self.clear_items()
         for i in range(9):
             b = discord.ui.Button(label="⬜", style=discord.ButtonStyle.secondary, custom_id=f"ttt_{i}", row=i//3)
             b.callback = self.move; self.add_item(b)
         await interaction.response.edit_message(content=self.status(), view=self)
-
     async def do_decline(self, interaction):
-        if interaction.user != self.opponent:
-            return await interaction.response.send_message("Not your game!", ephemeral=True)
+        if interaction.user != self.opponent: return await interaction.response.send_message("Not your game!", ephemeral=True)
         await interaction.response.edit_message(content="❌ Game declined.", view=None)
-
     def status(self):
-        return (f"❌ = {self.challenger.display_name}  |  ⭕ = {self.opponent.display_name}\n"
-                f"🎯 **{self.turn.display_name}'s turn**")
-
+        return f"❌ = {self.challenger.display_name}  |  ⭕ = {self.opponent.display_name}\n🎯 **{self.turn.display_name}'s turn**"
     async def move(self, interaction):
         if not self.accepted: return
-        if interaction.user != self.turn:
-            return await interaction.response.send_message("Not your turn!", ephemeral=True)
+        if interaction.user != self.turn: return await interaction.response.send_message("Not your turn!", ephemeral=True)
         idx = int(interaction.data["custom_id"].split("_")[1])
         if self.board[idx]: return
         self.board[idx] = self.turn
@@ -1237,20 +1442,15 @@ class TTTView(discord.ui.View):
             self.data[str(loser.id)]["wallet"]  -= self.bet
             save_db(self.data)
             for b in self.children: b.disabled = True
-            return await interaction.response.edit_message(
-                content=f"🏆 **{winner.display_name}** wins and takes **${self.bet:,}**!", view=self
-            )
+            return await interaction.response.edit_message(content=f"🏆 **{winner.display_name}** wins and takes **${self.bet:,}**!", view=self)
         if all(self.board):
             for b in self.children: b.disabled = True
             return await interaction.response.edit_message(content="🤝 Draw! Bets returned.", view=self)
         self.turn = self.opponent if self.turn == self.challenger else self.challenger
         await interaction.response.edit_message(content=self.status(), view=self)
-
     def check_winner(self):
-        wins = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
-        for a,b,c in wins:
-            if self.board[a] and self.board[a]==self.board[b]==self.board[c]:
-                return self.board[a]
+        for a,b,c in [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]:
+            if self.board[a] and self.board[a]==self.board[b]==self.board[c]: return self.board[a]
         return None
 
 @bot.command(aliases=["tictactoe"])
@@ -1279,7 +1479,6 @@ _FUN = [
     ("cuddle",   discord.Color.from_rgb(255,160,180)),
     ("kill",     discord.Color.dark_gray()),
 ]
-
 for _action, _color in _FUN:
     def _make(action, color):
         @bot.command(name=action)
@@ -1292,13 +1491,9 @@ for _action, _color in _FUN:
 async def bestie(ctx, member1: discord.Member, member2: discord.Member = None):
     a = member1; b = member2 or ctx.author
     pct  = abs(hash(f"{min(a.id,b.id)}{max(a.id,b.id)}")) % 101
-    fill = int(pct / 5); bar = "█"*fill + "░"*(20-fill)
+    bar  = "█"*int(pct/5) + "░"*(20-int(pct/5))
     note = "💕 Absolute besties!" if pct>=80 else ("😊 Pretty good friends!" if pct>=50 else "🤔 Could be better...")
-    embed = discord.Embed(
-        title="👯 Bestie Compatibility",
-        description=f"**{a.display_name}** & **{b.display_name}**\n\n`{bar}` **{pct}%**",
-        color=0xFF69B4
-    )
+    embed = discord.Embed(title="👯 Bestie Compatibility", description=f"**{a.display_name}** & **{b.display_name}**\n\n`{bar}` **{pct}%**", color=0xFF69B4)
     embed.set_footer(text=note)
     await ctx.send(embed=embed)
 
@@ -1310,11 +1505,7 @@ async def aura(ctx, member: discord.Member = None):
     elif power >= 700: label, color = "🌟 Radiant Aura",  0xFFA500
     elif power >= 400: label, color = "💫 Neutral Aura",  0x3498DB
     else:              label, color = "🌑 Dark Aura",      0x2C3E50
-    embed = discord.Embed(
-        title=f"🔮 {t.display_name}'s Aura",
-        description=f"**{label}**\nAura Power: **{power}/1000**",
-        color=color
-    )
+    embed = discord.Embed(title=f"🔮 {t.display_name}'s Aura", description=f"**{label}**\nAura Power: **{power}/1000**", color=color)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -1324,11 +1515,7 @@ async def ship(ctx, member1: discord.Member, member2: discord.Member = None):
     bar  = "💗"*(pct//10) + "🤍"*(10-pct//10)
     name = a.display_name[:max(1,len(a.display_name)//2)] + b.display_name[len(b.display_name)//2:]
     note = "💍 Soulmates!" if pct>=90 else ("💕 Strong connection!" if pct>=60 else ("🙂 There's potential!" if pct>=30 else "💔 Not meant to be..."))
-    embed = discord.Embed(
-        title="💘 Ship Meter",
-        description=f"**{a.display_name}** 💞 **{b.display_name}**\nShip name: **{name}**\n\n`{bar}` **{pct}%**",
-        color=0xFF1493
-    )
+    embed = discord.Embed(title="💘 Ship Meter", description=f"**{a.display_name}** 💞 **{b.display_name}**\nShip name: **{name}**\n\n`{bar}` **{pct}%**", color=0xFF1493)
     embed.set_footer(text=note)
     await ctx.send(embed=embed)
 
@@ -1346,44 +1533,94 @@ async def post_guidelines(channel):
         ),
         color=0xFF85A1
     )
-    embed.add_field(name="1️⃣  Discord TOS",     value="Follow [Discord's Terms of Service](https://discord.com/terms) and Community Guidelines at all times.", inline=False)
-    embed.add_field(name="2️⃣  Be Respectful",   value="Hate speech, harassment, sexism, racism, and doxing are **strictly forbidden** and will result in an immediate ban.", inline=False)
-    embed.add_field(name="3️⃣  SFW Only",        value="This server is **strictly Safe For Work**. No NSFW content of any kind. No e-dating.", inline=False)
-    embed.add_field(name="4️⃣  No Advertising",  value="Unauthorized promotion, server links, or poaching of members is **not allowed**.", inline=False)
-    embed.add_field(name="5️⃣  Staff Discretion",value="Staff may take action without prior warning. Follow staff instructions without argument.", inline=False)
+    embed.add_field(name="1️⃣  Discord TOS",      value="Follow [Discord's Terms of Service](https://discord.com/terms) at all times.", inline=False)
+    embed.add_field(name="2️⃣  Be Respectful",    value="Hate speech, harassment, sexism, racism, and doxing are **strictly forbidden**.", inline=False)
+    embed.add_field(name="3️⃣  SFW Only",         value="This server is **strictly Safe For Work**. No NSFW content. No e-dating.", inline=False)
+    embed.add_field(name="4️⃣  No Advertising",   value="Unauthorized promotion or poaching of members is **not allowed**.", inline=False)
+    embed.add_field(name="5️⃣  Staff Discretion", value="Staff may take action without prior warning. Follow staff instructions.", inline=False)
     embed.set_footer(text="By participating in this server you agree to these rules.")
     await channel.send(embed=embed, view=GuidelinesView())
+
+async def post_perks(channel):
+    embed = discord.Embed(
+        title="💎  Hang Spot — Perks & Rewards",
+        description="Here's everything you can unlock by supporting the server or leveling up!",
+        color=0xFFD700
+    )
+    embed.add_field(
+        name="👑 Donator Tiers",
+        value=(
+            "**( 🜏 ) 𝕸𝖔𝖓𝖆𝖗𝖈𝖍** `#800020` — The Leviathan Cross *(Power & Alchemy)*\n"
+            "└ Economy boost • Custom role • Audit log access • Secret VC\n\n"
+            "**( ⛤ ) 𝕺𝖛𝖊𝖗𝖑𝖔𝖗𝖉** `#4B0082` — The Pentagram *(Supernatural Authority)*\n"
+            "└ Massive economy currency • Trial Moderator status • Custom role\n\n"
+            "**( ♱ ) 𝕬𝖗𝖎𝖘𝖙𝖔𝖈𝖗𝖆𝖙** `#D4AF37` — The Flared Cross *(Noble Heritage)*\n"
+            "└ Economy boost • Color panel access • Exclusive channel\n\n"
+            "**( ⚚ ) 𝖁𝖆𝖓𝖌𝖚𝖆𝖗𝖉** `#2F4F4F` — The Caduceus *(The Guardian)*\n"
+            "└ Economy starter pack • Exclusive badge"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="📊 Level Milestones",
+        value=(
+            "**Lvl 5** — 📹 Streaming / Camera\n"
+            "**Lvl 10** — 🖼️ Media Channel Posting\n"
+            "**Lvl 20** — 😄 External Emojis\n"
+            "**Lvl 30** — 🎞️ GIFs\n"
+            "**Lvl 40** — 🎨 Color Panel\n"
+            "**Lvl 50** — 🗂️ External Stickers\n"
+            "**Lvl 60** — 📸 Post Images Anywhere\n"
+            "**Lvl 70** — ✨ +5 Credits per charm\n"
+            "**Lvl 80** — 🔊 Soundboards & Voice Messages\n"
+            "**Lvl 90** — 🎵 External Sounds\n"
+            "**Lvl 100** — ⭐ Prestige Unlock"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🌟 Weekly / Subscription Roles",
+        value=(
+            "**👑 Prince & Princess** — Weekly top chatters\n"
+            "**🦅 Godfather** — Weekly top voice user"
+        ),
+        inline=False
+    )
+    embed.set_footer(text="Use .level to check your progress • Contact staff to donate")
+    await channel.send(embed=embed)
 
 async def post_profile(channel):
     gender_embed = discord.Embed(
         title="💮  Gender Roles",
-        description=(
-            "Pick your gender role below.\n"
-            "Click again to **remove** it.\n\n"
-            "**1.** 🌸 Female\n"
-            "**2.** 💙 Male"
-        ),
+        description="Pick your gender role below.\nClick again to **remove** it.\n\n**1.** 🌸 Female\n**2.** 💙 Male",
         color=0xFF85A1
     )
     await channel.send(embed=gender_embed, view=GenderView())
-
     color_embed = discord.Embed(
         title="🎨  Color Roles",
         description=(
             "Choose your name color from the dropdown below!\n\n"
-            "**Red / Pink**\n"
-            "🔴 Scarlet Fury  •  🟠 Fire Pop  •  🌸 Rose Dust\n"
-            "❤️ Crimson Blaze  •  🍇 Raspberry Burst  •  🌷 Blush Bloom\n\n"
-            "**Yellow / Orange**\n"
-            "🟡 Golden Ember  •  🍯 Sunbeam Honey  •  🍑 Apricot Glow\n\n"
-            "**Green**\n"
-            "💚 Emerald Surge  •  🌿 Mint Breeze  •  🩵 Frosted Mist\n\n"
-            "**Blue**\n"
-            "🌊 Ocean Depth"
+            "**Red / Pink**\n🔴 Scarlet Fury  •  🟠 Fire Pop  •  🌸 Rose Dust\n❤️ Crimson Blaze  •  🍇 Raspberry Burst  •  🌷 Blush Bloom\n\n"
+            "**Yellow / Orange**\n🟡 Golden Ember  •  🍯 Sunbeam Honey  •  🍑 Apricot Glow\n\n"
+            "**Green**\n💚 Emerald Surge  •  🌿 Mint Breeze  •  🩵 Frosted Mist\n\n"
+            "**Blue**\n🌊 Ocean Depth"
         ),
         color=0x5865F2
     )
     await channel.send(embed=color_embed, view=ColorView())
+
+async def post_support(channel):
+    embed = discord.Embed(
+        title="💌  Hang Spot — Support",
+        description=(
+            "Need help? Click the button below to open a **private support ticket**.\n\n"
+            "A staff member will assist you as soon as possible.\n\n"
+            "🔒 Your ticket is **private** — only you and staff can see it."
+        ),
+        color=0xFF85A1
+    )
+    embed.set_footer(text="Please be patient and respectful with staff.")
+    await channel.send(embed=embed, view=TicketView())
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -1393,8 +1630,20 @@ async def setupguidelines(ctx):
 
 @bot.command()
 @commands.has_permissions(administrator=True)
+async def setupperks(ctx):
+    await post_perks(ctx.channel)
+    await ctx.message.delete()
+
+@bot.command()
+@commands.has_permissions(administrator=True)
 async def setupprofile(ctx):
     await post_profile(ctx.channel)
+    await ctx.message.delete()
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupsupport(ctx):
+    await post_support(ctx.channel)
     await ctx.message.delete()
 
 @bot.command()
