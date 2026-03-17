@@ -1610,28 +1610,80 @@ async def coinflip(ctx, amount: str, side: str):
 # ─────────────────────────────────────────────
 # BLACKJACK TABLE RENDERER (PIL)
 # ─────────────────────────────────────────────
-CARD_W     = 80
-CARD_H     = 112
-TABLE_W    = 800
-TABLE_H    = 600
-FELT_COLOR = (35, 100, 55)
-FELT_DARK  = (25, 80, 42)
-GOLD_COLOR = (212, 175, 55)
+CARD_W     = 100
+CARD_H     = 140
+TABLE_W    = 1200
+TABLE_H    = 800
+FELT_COLOR = (90, 20, 30)      # deep burgundy red
+FELT_DARK  = (50, 10, 15)      # darker burgundy for edges
+FELT_MID   = (110, 30, 40)     # mid tone for center glow
+GOLD_COLOR = (212, 175, 55)    # gold accents
 CARDS_DIR  = "./cards"
 
 def _draw_table_base(draw):
+    # Base dark background
     draw.rectangle([0, 0, TABLE_W, TABLE_H], fill=FELT_DARK)
-    draw.rectangle([8, 8, TABLE_W-8, TABLE_H-8], fill=FELT_COLOR)
-    draw.ellipse([220, 220, 580, 380], outline=GOLD_COLOR, width=2)
+
+    # Main felt area
+    draw.rectangle([0, 0, TABLE_W, TABLE_H], fill=FELT_COLOR)
+
+    # Cinematic vignette — darken edges with layered rectangles
+    vignette_steps = 18
+    for i in range(vignette_steps):
+        alpha = int(180 * (i / vignette_steps) ** 2)
+        margin = i * 4
+        vimg = Image.new("RGBA", (TABLE_W, TABLE_H), (0, 0, 0, 0))
+        vdraw = ImageDraw.Draw(vimg)
+        # Top edge
+        vdraw.rectangle([margin, margin, TABLE_W-margin, margin+6], fill=(0,0,0,alpha))
+        # Bottom edge
+        vdraw.rectangle([margin, TABLE_H-margin-6, TABLE_W-margin, TABLE_H-margin], fill=(0,0,0,alpha))
+        # Left edge
+        vdraw.rectangle([margin, margin, margin+6, TABLE_H-margin], fill=(0,0,0,alpha))
+        # Right edge
+        vdraw.rectangle([TABLE_W-margin-6, margin, TABLE_W-margin, TABLE_H-margin], fill=(0,0,0,alpha))
+        draw._image.paste(vimg, (0,0), vimg)
+
+    # Center soft light glow
+    glow = Image.new("RGBA", (TABLE_W, TABLE_H), (0,0,0,0))
+    gdraw = ImageDraw.Draw(glow)
+    cx, cy = TABLE_W//2, TABLE_H//2
+    for r in range(300, 0, -10):
+        alpha = int(18 * (1 - r/300))
+        gdraw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(180, 60, 80, alpha))
+    draw._image.paste(glow, (0,0), glow)
+
+    # Outer gold border
+    draw.rectangle([18, 18, TABLE_W-18, TABLE_H-18], outline=GOLD_COLOR, width=2)
+    draw.rectangle([24, 24, TABLE_W-24, TABLE_H-24], outline=(160, 120, 30), width=1)
+
+    # Center oval with gold outline
+    cx, cy = TABLE_W//2, TABLE_H//2
+    draw.ellipse([cx-220, cy-90, cx+220, cy+90], outline=GOLD_COLOR, width=2)
+    draw.ellipse([cx-214, cy-84, cx+214, cy+84], outline=(160, 120, 30), width=1)
+
+    # Decorative corner diamonds
+    for x, y in [(60,60),(TABLE_W-60,60),(60,TABLE_H-60),(TABLE_W-60,TABLE_H-60)]:
+        draw.polygon([(x,y-12),(x+12,y),(x,y+12),(x-12,y)], outline=GOLD_COLOR, width=1)
+
     try:
-        font  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
-        sfont = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+        font_lg = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+        font_xs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
     except Exception:
-        font = sfont = ImageFont.load_default()
-    draw.text((400, 285), "BLACKJACK", fill=GOLD_COLOR, font=font,  anchor="mm")
-    draw.text((400, 310), "Pays 3 to 2", fill=GOLD_COLOR, font=sfont, anchor="mm")
-    draw.text((400, 45),  "DEALER",     fill=GOLD_COLOR, font=sfont, anchor="mm")
-    draw.text((400, 555), "PLAYER",     fill=GOLD_COLOR, font=sfont, anchor="mm")
+        font_lg = font_sm = font_xs = ImageFont.load_default()
+
+    # Center text
+    draw.text((TABLE_W//2, TABLE_H//2 - 20), "BLACKJACK", fill=GOLD_COLOR, font=font_lg, anchor="mm")
+    draw.text((TABLE_W//2, TABLE_H//2 + 14), "Pays 3 to 2", fill=(180, 140, 40), font=font_sm, anchor="mm")
+
+    # Dealer / Player labels
+    draw.text((TABLE_W//2, 52), "D E A L E R", fill=(200, 160, 60), font=font_xs, anchor="mm")
+    draw.text((TABLE_W//2, TABLE_H-38), "P L A Y E R", fill=(200, 160, 60), font=font_xs, anchor="mm")
+
+    # Subtle felt texture lines (horizontal hatching)
+    for y in range(0, TABLE_H, 6):
+        draw.line([(0, y), (TABLE_W, y)], fill=(0,0,0,12), width=1)
 
 def _code_to_filename(code):
     """Convert card code like AH, 10D, KS to filename like ace_of_hearts.png"""
