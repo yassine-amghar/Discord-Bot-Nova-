@@ -1232,8 +1232,8 @@ def is_valid_word(word: str, combo: str) -> bool:
         return False
     if combo not in word:
         return False
-    if ENGLISH_WORDS is None:
-        return True  # fallback: accept if contains combo
+    if not ENGLISH_WORDS:
+        return True  # fallback: accept if contains combo and 3+ chars
     return word in ENGLISH_WORDS
 
 # Active blacktea game state
@@ -1329,33 +1329,34 @@ async def run_blacktea_game(channel, players):
                 word = msg.content.lower().strip()
 
                 if word in game.used_words:
-                    await channel.send(f"❌ **{word}** was already used! Try another.", delete_after=5)
+                    await msg.add_reaction("❌")
                     continue
 
                 if is_valid_word(word, game.combo):
                     game.used_words.add(word)
                     game.scores[player.id] += 1
                     game.money[player.id]  += BLACKTEA_REWARD_PER_WORD
-                    await channel.send(f"✅ **{word}** accepted! +${BLACKTEA_REWARD_PER_WORD:,}", delete_after=5)
+                    await msg.add_reaction("✅")
                     answered_correctly = True
                     break
                 else:
-                    # Wrong word — hidden countdown starts, wait for correct answer
-                    # Give 10 more seconds silently
+                    # Wrong word — react with ❌, hidden 10s countdown starts
+                    await msg.add_reaction("❌")
                     try:
                         msg2 = await bot.wait_for("message", timeout=10, check=check)
                         word2 = msg2.content.lower().strip()
                         if word2 in game.used_words:
-                            await channel.send(f"❌ Already used!", delete_after=3)
+                            await msg2.add_reaction("❌")
                             raise asyncio.TimeoutError()
                         if is_valid_word(word2, game.combo):
                             game.used_words.add(word2)
                             game.scores[player.id] += 1
                             game.money[player.id]  += BLACKTEA_REWARD_PER_WORD
-                            await channel.send(f"✅ **{word2}** accepted! +${BLACKTEA_REWARD_PER_WORD:,}", delete_after=5)
+                            await msg2.add_reaction("✅")
                             answered_correctly = True
                             break
                         else:
+                            await msg2.add_reaction("❌")
                             raise asyncio.TimeoutError()
                     except asyncio.TimeoutError:
                         break
