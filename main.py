@@ -2475,13 +2475,6 @@ async def serverinfo(ctx):
     await ctx.send(embed=embed)
 
 
-# ─────────────────────────────────────────────
-# START
-# ─────────────────────────────────────────────
-if TOKEN:
-    bot.run(TOKEN)
-else:
-    print("❌ TOKEN NOT FOUND! Check your .env file.")
 
 # ─────────────────────────────────────────────
 # SLOTS & HEIST COMMANDS
@@ -2541,3 +2534,11 @@ async def heist(ctx, member: discord.Member):
         data[uid]["bank"] = max(0, data[uid]["bank"] - fine)
         await ctx.send(f"🚓 **BUSTED!** You lost **${fine:,}** from your bank.")
     await save_db(data)
+
+# ─────────────────────────────────────────────
+# START
+# ─────────────────────────────────────────────
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("❌ TOKEN NOT FOUND! Check your .env file.")
