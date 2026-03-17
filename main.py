@@ -1610,189 +1610,16 @@ async def coinflip(ctx, amount: str, side: str):
 # ─────────────────────────────────────────────
 # BLACKJACK TABLE RENDERER (PIL)
 # ─────────────────────────────────────────────
-CARD_W     = 90
-CARD_H     = 126
-TABLE_W    = 900
-TABLE_H    = 600
-CARDS_DIR  = "./cards"
+CARD_W    = 80
+CARD_H    = 112
+TABLE_W   = 620
+TABLE_H   = 360
+AVATAR_S  = 80   # avatar square size
+CARDS_DIR = "./cards"
 
-def _draw_table_base(img: "Image.Image"):
-    """Draw the full table background with damask texture, vignette, and layout."""
-    draw = ImageDraw.Draw(img)
-
-    # ── Base felt color: deep burgundy-green ──
-    BASE   = (45, 65, 48)       # dark muted green-burgundy
-    DARK   = (28, 42, 30)       # very dark for vignette
-    ACCENT = (62, 88, 65)       # slightly lighter swirl highlight
-
-    draw.rectangle([0, 0, TABLE_W, TABLE_H], fill=BASE)
-
-    # ── Damask / crushed velvet texture via overlapping ellipses ──
-    texture = Image.new("RGBA", (TABLE_W, TABLE_H), (0,0,0,0))
-    tdraw   = ImageDraw.Draw(texture)
-    import random as _rnd
-    _rnd.seed(42)
-    for _ in range(320):
-        x  = _rnd.randint(0, TABLE_W)
-        y  = _rnd.randint(0, TABLE_H)
-        rw = _rnd.randint(20, 80)
-        rh = _rnd.randint(6, 20)
-        a  = _rnd.randint(6, 18)
-        c  = _rnd.choice([(0,0,0,a),(255,255,255,a//2)])
-        tdraw.ellipse([x-rw, y-rh, x+rw, y+rh], fill=c)
-    img.paste(texture, (0,0), texture)
-
-    # ── Vignette: darken edges toward center ──
-    vign = Image.new("RGBA", (TABLE_W, TABLE_H), (0,0,0,0))
-    vdraw= ImageDraw.Draw(vign)
-    steps = 30
-    for i in range(steps):
-        t  = i / steps
-        a  = int(160 * t * t)
-        m  = i * 7
-        vdraw.rectangle([m, m, TABLE_W-m, TABLE_H-m],
-                        outline=(0,0,0,a), width=7)
-    img.paste(vign, (0,0), vign)
-
-    # ── Center soft glow ──
-    glow = Image.new("RGBA", (TABLE_W, TABLE_H), (0,0,0,0))
-    gdraw= ImageDraw.Draw(glow)
-    cx, cy = TABLE_W//2, TABLE_H//2
-    for r in range(280, 0, -14):
-        a = int(22 * (1 - r/280))
-        gdraw.ellipse([cx-r, cy-r*0.7, cx+r, cy+r*0.7], fill=(90,130,90,a))
-    img.paste(glow, (0,0), glow)
-
-    # ── Player name label bottom center ──
-    try:
-        font_name = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-    except Exception:
-        font_name = ImageFont.load_default()
-    draw = ImageDraw.Draw(img)
-    draw.text((TABLE_W//2, TABLE_H - 18), "EN1SSAY",
-              fill=(255,255,255,200), font=font_name, anchor="mm")
-
-
-def _score_box(img: "Image.Image", x: int, y: int, score: int,
-               label: str, avatar_img=None, align="left"):
-    """
-    Draw an avatar + score block.
-    align='left'  → dealer top-left
-    align='right' → player bottom-right
-    """
-    draw     = ImageDraw.Draw(img)
-    BOX_W    = 110
-    BOX_H    = 32
-    AVATAR_S = 44
-
-    try:
-        font_score = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
-        font_label = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-    except Exception:
-        font_score = font_label = ImageFont.load_default()
-
-    if align == "left":
-        av_x, av_y   = x, y
-        box_x, box_y = x, y + AVATAR_S + 2
-    else:
-        av_x, av_y   = x - AVATAR_S, y - AVATAR_S - BOX_H - 2
-        box_x, box_y = x - BOX_W,    y - BOX_H
-
-    # Avatar placeholder (circle with initial or real avatar)
-    av_img = Image.new("RGBA", (AVATAR_S, AVATAR_S), (0,0,0,0))
-    av_draw= ImageDraw.Draw(av_img)
-    av_draw.ellipse([0,0,AVATAR_S,AVATAR_S], fill=(30,30,30,220))
-    av_draw.ellipse([2,2,AVATAR_S-2,AVATAR_S-2], outline=(200,200,200,160), width=1)
-    if avatar_img:
-        try:
-            sized = avatar_img.resize((AVATAR_S-4, AVATAR_S-4), Image.LANCZOS).convert("RGBA")
-            mask  = Image.new("L", (AVATAR_S-4, AVATAR_S-4), 0)
-            ImageDraw.Draw(mask).ellipse([0,0,AVATAR_S-4,AVATAR_S-4], fill=255)
-            av_img.paste(sized, (2,2), mask)
-        except Exception:
-            pass
-    else:
-        av_draw.text((AVATAR_S//2, AVATAR_S//2), label[0].upper(),
-                     fill=(255,255,255,200), font=font_score, anchor="mm")
-    img.paste(av_img, (av_x, av_y), av_img)
-
-    # Score box
-    draw.rectangle([box_x, box_y, box_x+BOX_W, box_y+BOX_H],
-                   fill=(0,0,0,210))
-    draw.text((box_x + BOX_W//2, box_y + BOX_H//2 - 8),
-              label, fill=(180,180,180), font=font_label, anchor="mm")
-    draw.text((box_x + BOX_W//2, box_y + BOX_H//2 + 8),
-              str(score), fill=(255,255,255), font=font_score, anchor="mm")
-
-
-def _place_cards_at(table, cards, x_anchor, y_anchor,
-                    hide_second=False, direction="right"):
-    """
-    Place cards starting at (x_anchor, y_anchor).
-    direction='right' → cards go right (dealer top-left)
-    direction='left'  → cards go left  (player bottom-right)
-    """
-    step = CARD_W - 22
-    for i, code in enumerate(cards):
-        if hide_second and i == 1:
-            card_img = _card_back()
-        else:
-            card_img = _load_card(code)
-        if direction == "right":
-            cx = x_anchor + i * step
-            cy = y_anchor
-        else:
-            cx = x_anchor - (i * step) - CARD_W
-            cy = y_anchor - CARD_H
-        shadow = Image.new("RGBA", (CARD_W+4, CARD_H+4), (0,0,0,90))
-        table.paste(shadow, (cx+3, cy+3), shadow)
-        table.paste(card_img, (cx, cy), card_img)
-
-
-def render_blackjack_table(dealer_cards, player_cards,
-                           hide_dealer=True,
-                           dealer_score=0, player_score=0,
-                           player_avatar=None):
-    """Render the full blackjack table. Returns BytesIO PNG."""
-    BASE  = (45, 65, 48)
-    table = Image.new("RGBA", (TABLE_W, TABLE_H), BASE)
-    _draw_table_base(table)
-
-    # Dealer: top-left — avatar+score at (28, 28), cards to the right below
-    DEALER_X = 28
-    DEALER_Y = 28
-    _score_box(table, DEALER_X, DEALER_Y,
-               score=dealer_score if not hide_dealer else "?",
-               label="DEALER", align="left")
-    _place_cards_at(table, dealer_cards,
-                    x_anchor=DEALER_X,
-                    y_anchor=DEALER_Y + 96,
-                    hide_second=hide_dealer,
-                    direction="right")
-
-    # Player: bottom-right — cards above, avatar+score at bottom-right
-    PLAYER_X = TABLE_W - 28
-    PLAYER_Y = TABLE_H - 28
-    _score_box(table, PLAYER_X, PLAYER_Y,
-               score=player_score,
-               label="YOU", align="right",
-               avatar_img=player_avatar)
-    _place_cards_at(table, player_cards,
-                    x_anchor=PLAYER_X,
-                    y_anchor=PLAYER_Y - 110,
-                    hide_second=False,
-                    direction="left")
-
-    buf = io.BytesIO()
-    table.convert("RGB").save(buf, format="PNG", quality=95)
-    buf.seek(0)
-    return buf
 
 def _code_to_filename(code):
-    code = code.upper()
+    code  = code.upper()
     value = code[:-1]
     suit  = code[-1]
     value_map = {
@@ -1805,6 +1632,7 @@ def _code_to_filename(code):
     s = suit_map.get(suit, suit.lower())
     return f"{v}_of_{s}.png"
 
+
 def _load_card(code):
     filename = _code_to_filename(code)
     path     = os.path.join(CARDS_DIR, filename)
@@ -1812,12 +1640,16 @@ def _load_card(code):
         return Image.open(path).convert("RGBA").resize((CARD_W, CARD_H), Image.LANCZOS)
     return _placeholder_card(code)
 
+
 def _placeholder_card(code):
     img  = Image.new("RGBA", (CARD_W, CARD_H), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, CARD_W-1, CARD_H-1], outline=(0,0,0), width=2)
+    draw.rectangle([0, 0, CARD_W-1, CARD_H-1], outline=(0, 0, 0), width=2)
+    draw.rounded_rectangle([2, 2, CARD_W-3, CARD_H-3], radius=6,
+                            outline=(180, 180, 180), width=1)
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
     except Exception:
         font = ImageFont.load_default()
     suit   = code[-1].upper()
@@ -1826,34 +1658,163 @@ def _placeholder_card(code):
     syms   = {"H": "♥", "D": "♦", "S": "♠", "C": "♣"}
     color  = colors.get(suit, (20,20,20))
     sym    = syms.get(suit, suit)
-    draw.text((CARD_W//2, CARD_H//2-12), value, fill=color, font=font, anchor="mm")
-    draw.text((CARD_W//2, CARD_H//2+14), sym,   fill=color, font=font, anchor="mm")
+    draw.text((CARD_W//2, CARD_H//2 - 10), value, fill=color, font=font, anchor="mm")
+    draw.text((CARD_W//2, CARD_H//2 + 12), sym,   fill=color, font=font, anchor="mm")
     return img
 
+
 def _card_back():
-    # Use back.png from cards folder if available
     path = os.path.join(CARDS_DIR, "back.png")
     if os.path.exists(path):
         return Image.open(path).convert("RGBA").resize((CARD_W, CARD_H), Image.LANCZOS)
-    img  = Image.new("RGBA", (CARD_W, CARD_H), (255,255,255,255))
+    img  = Image.new("RGBA", (CARD_W, CARD_H), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, CARD_W-1, CARD_H-1], fill=(15,40,120), outline=(0,0,0), width=2)
-    for y in range(10, CARD_H-10, 8):
-        for x in range(10, CARD_W-10, 8):
-            draw.rectangle([x, y, x+4, y+4], fill=(25,60,160))
+    draw.rectangle([0, 0, CARD_W-1, CARD_H-1], fill=(180, 20, 20),
+                   outline=(120, 10, 10), width=2)
+    for y in range(8, CARD_H-8, 10):
+        for x in range(8, CARD_W-8, 10):
+            draw.ellipse([x-3, y-3, x+3, y+3], fill=(200, 30, 30))
     return img
 
-def _place_cards(table, cards, y_center, hide_second=False, overlap=20):
-    n       = len(cards)
-    step    = CARD_W - overlap
-    total_w = CARD_W + (n-1)*step
-    x_start = (TABLE_W - total_w) // 2
-    y_start = y_center - CARD_H // 2
-    for i, code in enumerate(cards):
-        card_img = _card_back() if (hide_second and i == 1) else _load_card(code)
-        shadow   = Image.new("RGBA", (CARD_W+4, CARD_H+4), (0,0,0,80))
-        table.paste(shadow, (x_start + i*step + 3, y_start + 3), shadow)
-        table.paste(card_img, (x_start + i*step, y_start), card_img)
+
+def _draw_bg(img):
+    """Draw the burgundy-red felt background with subtle texture."""
+    draw = ImageDraw.Draw(img)
+    # Base color
+    draw.rectangle([0, 0, TABLE_W, TABLE_H], fill=(100, 15, 15))
+    # Subtle texture overlay
+    tex = Image.new("RGBA", (TABLE_W, TABLE_H), (0, 0, 0, 0))
+    tdraw = ImageDraw.Draw(tex)
+    import random as _r
+    _r.seed(99)
+    for _ in range(400):
+        x  = _r.randint(0, TABLE_W)
+        y  = _r.randint(0, TABLE_H)
+        rw = _r.randint(15, 60)
+        rh = _r.randint(4, 14)
+        a  = _r.randint(5, 15)
+        tdraw.ellipse([x-rw, y-rh, x+rw, y+rh], fill=(0, 0, 0, a))
+    img.paste(tex, (0, 0), tex)
+    # Vignette
+    vig = Image.new("RGBA", (TABLE_W, TABLE_H), (0, 0, 0, 0))
+    vdraw = ImageDraw.Draw(vig)
+    for i in range(25):
+        a = int(140 * (i / 25) ** 2)
+        m = i * 5
+        vdraw.rectangle([m, m, TABLE_W-m, TABLE_H-m],
+                        outline=(0, 0, 0, a), width=5)
+    img.paste(vig, (0, 0), vig)
+
+
+def _paste_avatar(table, avatar_img, x, y, size):
+    """Paste a square avatar at (x, y)."""
+    if avatar_img:
+        try:
+            av = avatar_img.resize((size, size), Image.LANCZOS).convert("RGBA")
+            table.paste(av, (x, y), av)
+            return
+        except Exception:
+            pass
+    # Fallback grey square
+    av = Image.new("RGBA", (size, size), (60, 60, 60, 255))
+    table.paste(av, (x, y), av)
+
+
+def _score_box(table, x, y, w, h, score):
+    """Draw a black score box with white bold number."""
+    draw = ImageDraw.Draw(table)
+    draw.rectangle([x, y, x+w, y+h], fill=(20, 20, 20, 220))
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((x + w//2, y + h//2), str(score),
+              fill=(255, 255, 255), font=font, anchor="mm")
+
+
+def render_blackjack_table(dealer_cards, player_cards,
+                            hide_dealer=True,
+                            dealer_score=0, player_score=0,
+                            dealer_avatar=None, player_avatar=None,
+                            player_name="PLAYER"):
+    """
+    Render blackjack table matching the reference image:
+    - Dealer: top-left  (avatar square + score box below + cards to the right)
+    - Player: bottom-right (cards to the left + score box + avatar square)
+    - 'Dealer' label top-center, player name label bottom-center
+    """
+    table = Image.new("RGBA", (TABLE_W, TABLE_H), (100, 15, 15))
+    _draw_bg(table)
+    draw  = ImageDraw.Draw(table)
+
+    try:
+        font_label = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+    except Exception:
+        font_label = ImageFont.load_default()
+
+    # ── "Dealer" label top-center ──
+    draw.text((TABLE_W // 2, 18), "Dealer",
+              fill=(255, 255, 255), font=font_label, anchor="mm")
+
+    # ── DEALER section: top-left ──
+    D_X = 18   # left edge
+    D_Y = 30   # top edge
+
+    # Avatar square
+    _paste_avatar(table, dealer_avatar, D_X, D_Y, AVATAR_S)
+
+    # Score box below avatar
+    BOX_W, BOX_H = AVATAR_S, 36
+    ds = "?" if hide_dealer else str(dealer_score)
+    _score_box(table, D_X, D_Y + AVATAR_S + 2, BOX_W, BOX_H, ds)
+
+    # Cards to the right of avatar, vertically centered on avatar
+    card_y = D_Y + (AVATAR_S - CARD_H) // 2
+    card_x = D_X + AVATAR_S + 10
+    step   = CARD_W - 16
+    for i, code in enumerate(dealer_cards):
+        card_img = _card_back() if (hide_dealer and i >= 1) else _load_card(code)
+        shadow   = Image.new("RGBA", (CARD_W+3, CARD_H+3), (0, 0, 0, 80))
+        table.paste(shadow, (card_x + i*step + 3, card_y + 3), shadow)
+        table.paste(card_img, (card_x + i*step, card_y), card_img)
+
+    # ── PLAYER section: bottom-right ──
+    P_X = TABLE_W - 18 - AVATAR_S  # right edge minus avatar
+    P_Y = TABLE_H - 36 - AVATAR_S - 10  # bottom edge minus score box minus avatar
+
+    # Avatar square (rightmost)
+    _paste_avatar(table, player_avatar, P_X, P_Y, AVATAR_S)
+
+    # Score box to the LEFT of avatar
+    SB_X = P_X - BOX_W - 6
+    SB_Y = P_Y + AVATAR_S - BOX_H  # bottom-align with avatar
+    _score_box(table, SB_X, SB_Y, BOX_W, BOX_H, str(player_score))
+
+    # Cards to the left of score box
+    n_cards = len(player_cards)
+    cards_total_w = CARD_W + (n_cards - 1) * step
+    cards_x_end   = SB_X - 10
+    cards_x_start = cards_x_end - cards_total_w
+    card_y_p      = P_Y + (AVATAR_S - CARD_H) // 2
+    for i, code in enumerate(player_cards):
+        card_img = _load_card(code)
+        cx = cards_x_start + i * step
+        shadow = Image.new("RGBA", (CARD_W+3, CARD_H+3), (0, 0, 0, 80))
+        table.paste(shadow, (cx+3, card_y_p+3), shadow)
+        table.paste(card_img, (cx, card_y_p), card_img)
+
+    # ── Player name label bottom-center ──
+    draw.text((TABLE_W // 2, TABLE_H - 16), player_name.upper(),
+              fill=(255, 255, 255), font=font_label, anchor="mm")
+
+    buf = io.BytesIO()
+    table.convert("RGB").save(buf, format="PNG", quality=95)
+    buf.seek(0)
+    return buf
+
+
 class BlackjackView(discord.ui.View):
     VALS  = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
     SUITS = ["S","H","D","C"]
@@ -1875,25 +1836,25 @@ class BlackjackView(discord.ui.View):
         while t > 21 and aces: t -= 10; aces -= 1
         return t
     async def send_table(self, interaction, hide_dealer=True, note=""):
-        pt  = self.total(self.player)
-        dt  = self.total(self.dealer)
+        pt = self.total(self.player)
+        dt = self.total(self.dealer)
         # Fetch player avatar
-        avatar_img = None
+        player_avatar = None
         try:
             import urllib.request as _ur
-            avatar_url = str(self.ctx.author.display_avatar.url)
-            with _ur.urlopen(avatar_url, timeout=3) as resp:
-                avatar_img = Image.open(io.BytesIO(resp.read())).convert("RGBA")
+            with _ur.urlopen(str(self.ctx.author.display_avatar.url), timeout=3) as resp:
+                player_avatar = Image.open(io.BytesIO(resp.read())).convert("RGBA")
         except Exception:
             pass
         buf  = render_blackjack_table(
             self.dealer, self.player,
             hide_dealer=hide_dealer,
             dealer_score=dt, player_score=pt,
-            player_avatar=avatar_img
+            player_avatar=player_avatar,
+            player_name=self.ctx.author.display_name
         )
         file  = discord.File(buf, filename="table.png")
-        embed = discord.Embed(color=0x1a2e1c)
+        embed = discord.Embed(color=0x640f0f)
         embed.add_field(name=f"Dealer {'('+str(dt)+')' if not hide_dealer else '(??)'}", value="  ".join(self.dealer) if not hide_dealer else f"{self.dealer[0]}  🂠", inline=True)
         embed.add_field(name=f"You ({pt})", value="  ".join(self.player), inline=True)
         embed.add_field(name="Bet", value=f"${self.bet:,}", inline=False)
@@ -1945,10 +1906,24 @@ async def blackjack(ctx, amount: str):
         embed.set_image(url="attachment://table.png")
         embed.set_footer(text=f"🃏 Blackjack! +${win:,}")
         return await ctx.send(embed=embed, file=file)
-    buf   = render_blackjack_table(view.dealer, view.player, hide_dealer=True)
+    # Fetch player avatar for initial render
+    player_avatar = None
+    try:
+        import urllib.request as _ur
+        with _ur.urlopen(str(ctx.author.display_avatar.url), timeout=3) as resp:
+            player_avatar = Image.open(io.BytesIO(resp.read())).convert("RGBA")
+    except Exception:
+        pass
+    pt  = view.total(view.player)
+    buf = render_blackjack_table(
+        view.dealer, view.player,
+        hide_dealer=True,
+        dealer_score=0, player_score=pt,
+        player_avatar=player_avatar,
+        player_name=ctx.author.display_name
+    )
     file  = discord.File(buf, filename="table.png")
-    pt    = view.total(view.player)
-    embed = discord.Embed(title="🃏 Blackjack", color=0x236432)
+    embed = discord.Embed(color=0x640f0f)
     embed.add_field(name="Dealer (??)", value=f"{view.dealer[0]}  🂠", inline=True)
     embed.add_field(name=f"You ({pt})", value="  ".join(view.player), inline=True)
     embed.add_field(name="Bet", value=f"${bet:,}", inline=False)
