@@ -1320,7 +1320,7 @@ async def run_blacktea_game(channel, players):
         )
 
         def check(m):
-            return m.author == player and m.channel == channel and not m.bot
+            return m.author == player and m.channel == channel and not m.author.bot
 
         answered_correctly = False
         try:
@@ -2482,3 +2482,62 @@ if TOKEN:
     bot.run(TOKEN)
 else:
     print("❌ TOKEN NOT FOUND! Check your .env file.")
+
+# ─────────────────────────────────────────────
+# SLOTS & HEIST COMMANDS
+# ─────────────────────────────────────────────
+SLOT_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
+SLOT_PAYOUTS = {
+    ("💎", "💎", "💎"): 10,
+    ("⭐", "⭐", "⭐"): 5,
+    ("🍇", "🍇", "🍇"): 4,
+    ("🍊", "🍊", "🍊"): 3,
+    ("🍋", "🍋", "🍋"): 2.5,
+    ("🍒", "🍒", "🍒"): 2,
+}
+
+@bot.command()
+async def slots(ctx, amount: str):
+    data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
+    bet  = parse_amount(amount, data[uid]["wallet"])
+    if not bet or bet <= 0 or bet > data[uid]["wallet"]:
+        return await ctx.send("❌ Invalid bet or insufficient funds.")
+    data[uid]["wallet"] -= bet
+    result = tuple(random.choices(SLOT_SYMBOLS, weights=[20,18,16,12,8,4], k=3))
+    payout = SLOT_PAYOUTS.get(result, 0)
+    embed  = discord.Embed(title="🎰 Slots", color=0xFFD700)
+    embed.add_field(name="Result", value=f"[ {result[0]} | {result[1]} | {result[2]} ]", inline=False)
+    if payout > 0:
+        win = int(bet * payout * get_multiplier(data, ctx.author.id))
+        data[uid]["wallet"] += win
+        embed.add_field(name="Outcome", value=f"🎉 **WINNER!** {payout}x → **+${win:,}**")
+        embed.color = 0x2ECC71
+    else:
+        embed.add_field(name="Outcome", value=f"😔 No match. Lost **${bet:,}**.")
+        embed.color = 0xE74C3C
+    await save_db(data)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def heist(ctx, member: discord.Member):
+    if member == ctx.author:
+        return await ctx.send("❌ You can't heist yourself.")
+    data = await get_db()
+    ensure_user(data, ctx.author.id); ensure_user(data, member.id)
+    uid = str(ctx.author.id); tid = str(member.id)
+    cd_left = 18000 - (time.time() - data[uid].get("last_heist", 0))
+    if cd_left > 0:
+        return await ctx.send(f"⏱️ Heist cooldown! **{str(datetime.timedelta(seconds=int(cd_left)))}** remaining.")
+    if data[tid]["bank"] < 5000:
+        return await ctx.send("❌ Their vault doesn't have enough (need $5,000+).")
+    data[uid]["last_heist"] = time.time()
+    if random.randint(1, 100) <= 30:
+        stolen = int(data[tid]["bank"] * 0.5)
+        data[uid]["wallet"] += stolen
+        data[tid]["bank"]   -= stolen
+        await ctx.send(f"🏦 **VAULT CRACKED!** You took **${stolen:,}** from {member.display_name}'s bank!")
+    else:
+        fine = int(data[uid]["bank"] * 0.2)
+        data[uid]["bank"] = max(0, data[uid]["bank"] - fine)
+        await ctx.send(f"🚓 **BUSTED!** You lost **${fine:,}** from your bank.")
+    await save_db(data)
