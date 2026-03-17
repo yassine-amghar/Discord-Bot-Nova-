@@ -2388,7 +2388,28 @@ async def addxp(ctx, member: discord.Member, amount: int):
     data[uid]["xp"] = max(0, data[uid]["xp"] + amount)
     await save_db(data)
     action = "Added" if amount >= 0 else "Removed"
+    await assign_milestone_roles(member, data[uid]["level"])
     await ctx.send(f"✅ {action} **{abs(amount)} XP** {'to' if amount >= 0 else 'from'} {member.display_name}. Current XP: **{data[uid]['xp']}**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def syncroles(ctx, member: discord.Member = None):
+    """Sync milestone roles for a user or all members."""
+    if member:
+        data = await get_db(); ensure_user(data, member.id)
+        level = data[str(member.id)]["level"]
+        await assign_milestone_roles(member, level)
+        await ctx.send(f"✅ Synced milestone roles for **{member.display_name}** (Level {level}).")
+    else:
+        await ctx.send("⏳ Syncing milestone roles for all members...")
+        data = await get_db()
+        count = 0
+        for m in ctx.guild.members:
+            if m.bot: continue
+            ensure_user(data, m.id)
+            await assign_milestone_roles(m, data[str(m.id)]["level"])
+            count += 1
+        await ctx.send(f"✅ Synced milestone roles for **{count}** members.")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
