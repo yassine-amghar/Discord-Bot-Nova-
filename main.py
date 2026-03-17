@@ -1842,7 +1842,8 @@ def _place_cards(table, cards, y_center, hide_second=False, overlap=20):
         table.paste(card_img, (x_start + i*step, y_start), card_img)
 
 def render_blackjack_table(dealer_cards, player_cards, hide_dealer=True):
-    table = Image.new("RGBA", (TABLE_W, TABLE_H), FELT_COLOR)
+    BASE  = (45, 65, 48)
+    table = Image.new("RGBA", (TABLE_W, TABLE_H), BASE)
     draw  = ImageDraw.Draw(table)
     _draw_table_base(draw)
     _place_cards(table, dealer_cards, y_center=140, hide_second=hide_dealer)
