@@ -1791,6 +1791,20 @@ def render_blackjack_table(dealer_cards, player_cards,
     buf.seek(0)
     return buf
 
+def _code_to_filename(code):
+    code = code.upper()
+    value = code[:-1]
+    suit  = code[-1]
+    value_map = {
+        "A": "ace", "2": "2", "3": "3", "4": "4", "5": "5",
+        "6": "6", "7": "7", "8": "8", "9": "9", "10": "10",
+        "J": "jack", "Q": "queen", "K": "king"
+    }
+    suit_map = {"H": "hearts", "D": "diamonds", "S": "spades", "C": "clubs"}
+    v = value_map.get(value, value.lower())
+    s = suit_map.get(suit, suit.lower())
+    return f"{v}_of_{s}.png"
+
 def _load_card(code):
     filename = _code_to_filename(code)
     path     = os.path.join(CARDS_DIR, filename)
