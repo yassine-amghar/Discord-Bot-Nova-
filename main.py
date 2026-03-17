@@ -1757,7 +1757,8 @@ def render_blackjack_table(dealer_cards, player_cards,
                            dealer_score=0, player_score=0,
                            player_avatar=None):
     """Render the full blackjack table. Returns BytesIO PNG."""
-    table = Image.new("RGBA", (TABLE_W, TABLE_H), (45, 65, 48))
+    BASE  = (45, 65, 48)
+    table = Image.new("RGBA", (TABLE_W, TABLE_H), BASE)
     _draw_table_base(table)
 
     # Dealer: top-left — avatar+score at (28, 28), cards to the right below
