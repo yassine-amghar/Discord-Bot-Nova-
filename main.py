@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import asyncpg
+from PIL import Image
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
