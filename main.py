@@ -1606,8 +1606,10 @@ async def coinflip(ctx, amount: str, side: str):
     await save_db(data); await ctx.send(msg)
 
 class BlackjackView(discord.ui.View):
+    # Updated Suits to match PNG naming (S, H, D, C)
     VALS  = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
-    SUITS = ["♠","♥","♦","♣"]
+    SUITS = ["S","H","D","C"] 
+
     def __init__(self, ctx, bet, data):
         super().__init__(timeout=120)
         self.ctx = ctx; self.bet = bet; self.data = data
@@ -1615,24 +1617,55 @@ class BlackjackView(discord.ui.View):
         random.shuffle(deck); self.deck = deck
         self.player = [self.deck.pop(), self.deck.pop()]
         self.dealer = [self.deck.pop(), self.deck.pop()]
+
     def val(self, card):
         v = card[:-1]
         if v in ("J","Q","K"): return 10
         if v == "A": return 11
         return int(v)
+
     def total(self, hand):
         t = sum(self.val(c) for c in hand)
         aces = sum(1 for c in hand if c[:-1]=="A")
         while t > 21 and aces: t -= 10; aces -= 1
         return t
+
+    def generate_table_img(self, hide_dealer=True):
+        # Create Forest Green Background
+        table = Image.new('RGB', (800, 500), (20, 80, 20)) 
+        spacing = 110
+
+        # Draw Dealer Hand (Top)
+        for i, card in enumerate(self.dealer):
+            card_file = f"cards/{card}.png" if not hide_dealer or i == 0 else "cards/BACK.png"
+            with Image.open(card_file).convert("RGBA") as card_img:
+                table.paste(card_img, (150 + (i * spacing), 70), card_img)
+
+        # Draw Player Hand (Bottom)
+        for i, card in enumerate(self.player):
+            with Image.open(f"cards/{card}.png").convert("RGBA") as card_img:
+                table.paste(card_img, (150 + (i * spacing), 280), card_img)
+
+        buffer = io.BytesIO()
+        table.save(buffer, format='PNG')
+        buffer.seek(0)
+        return buffer
+
     def build_embed(self, ended=False, note=""):
         pt = self.total(self.player); dt = self.total(self.dealer)
-        e  = discord.Embed(title="🃏 Blackjack", color=0x2ECC71)
-        e.add_field(name=f"Dealer {'('+str(dt)+')' if ended else ''}", value="  ".join(self.dealer) if ended else f"{self.dealer[0]}  🂠", inline=False)
-        e.add_field(name=f"You ({pt})", value="  ".join(self.player), inline=False)
-        e.add_field(name="Bet", value=f"${self.bet:,}", inline=True)
+        
+        # Determine color based on outcome
+        color = 0x2ECC71
+        if "lost" in note.lower(): color = 0xE74C3C
+        elif "push" in note.lower(): color = 0xF1C40F
+
+        e = discord.Embed(title="🜲 ﹒ Nova Blackjack", color=color)
+        e.description = f"**Dealer:** {'('+str(dt)+')' if ended else '?'}\n**You:** {pt}\n\n**Bet:** `${self.bet:,}`"
+        e.set_image(url="attachment://table.png")
+        
         if note: e.set_footer(text=note)
         return e
+
     async def resolve(self, interaction, status):
         uid = str(self.ctx.author.id); mult = get_multiplier(self.data, self.ctx.author.id)
         if status == "win":
@@ -1643,20 +1676,34 @@ class BlackjackView(discord.ui.View):
             self.data[uid]["wallet"] += self.bet; note = "🤝 Push — bet returned."
         else:
             note = f"😔 You lost ${self.bet:,}."
+        
         await save_db(self.data)
         for c in self.children: c.disabled = True
-        await interaction.response.edit_message(embed=self.build_embed(ended=True, note=note), view=self)
+        
+        img = self.generate_table_img(hide_dealer=False)
+        file = discord.File(fp=img, filename="table.png")
+        await interaction.response.edit_message(embed=self.build_embed(ended=True, note=note), attachments=[file], view=self)
+
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
     async def hit(self, interaction, btn):
-        if interaction.user != self.ctx.author: return await interaction.response.send_message("Not your game!", ephemeral=True)
+        if interaction.user != self.ctx.author: 
+            return await interaction.response.send_message("Not your game!", ephemeral=True)
+        
         self.player.append(self.deck.pop()); pt = self.total(self.player)
+        
         if pt > 21: return await self.resolve(interaction, "lose")
         if pt == 21: return await self.stand_logic(interaction)
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        
+        img = self.generate_table_img(hide_dealer=True)
+        file = discord.File(fp=img, filename="table.png")
+        await interaction.response.edit_message(embed=self.build_embed(), attachments=[file], view=self)
+
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
     async def stand(self, interaction, btn):
-        if interaction.user != self.ctx.author: return await interaction.response.send_message("Not your game!", ephemeral=True)
+        if interaction.user != self.ctx.author: 
+            return await interaction.response.send_message("Not your game!", ephemeral=True)
         await self.stand_logic(interaction)
+
     async def stand_logic(self, interaction):
         while self.total(self.dealer) < 17: self.dealer.append(self.deck.pop())
         p, d = self.total(self.player), self.total(self.dealer)
@@ -1667,14 +1714,25 @@ class BlackjackView(discord.ui.View):
 async def blackjack(ctx, amount: str):
     data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
     bet = parse_amount(amount, data[uid]["wallet"])
-    if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
+    
+    if not bet or bet <= 0 or bet > data[uid]["wallet"]: 
+        return await ctx.send("❌ Invalid bet.")
+    
     data[uid]["wallet"] -= bet; await save_db(data)
+    
     view = BlackjackView(ctx, bet, data)
+    
+    # Handle Instant Blackjack
     if view.total(view.player) == 21:
         win = int(bet * 1.5); data[uid]["wallet"] += bet + win; await save_db(data)
-        return await ctx.send(embed=view.build_embed(ended=True, note=f"🃏 Blackjack! +${win:,}"))
-    await ctx.send(embed=view.build_embed(), view=view)
-
+        img = view.generate_table_img(hide_dealer=False)
+        file = discord.File(fp=img, filename="table.png")
+        return await ctx.send(file=file, embed=view.build_embed(ended=True, note=f"🃏 Blackjack! +${win:,}"))
+    
+    # Initial Game Start
+    img = view.generate_table_img(hide_dealer=True)
+    file = discord.File(fp=img, filename="table.png")
+    await ctx.send(file=file, embed=view.build_embed(), view=view)
 _REDS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 ROULETTE_BETS = {
     "red":    (lambda n: n in _REDS, 2),
