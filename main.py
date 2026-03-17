@@ -43,9 +43,15 @@ db_pool = None
 
 async def init_db():
     global db_pool
+    database_url = os.getenv("DATABASE_URL", "")
+    if not database_url:
+        print("❌ DATABASE_URL not set!")
+        return
+    # Fix SSL for Railway public URL
+    if "railway" in database_url and "sslmode" not in database_url:
+        database_url += "?sslmode=require"
     db_pool = await asyncpg.create_pool(
-        os.getenv("DATABASE_URL"),
-        ssl="require",
+        database_url,
         min_size=1,
         max_size=5
     )
