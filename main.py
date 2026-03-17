@@ -653,6 +653,8 @@ async def on_ready():
     bot.add_view(CloseTicketView())
     update_leaderboards.start()
     weekly_reset.start()
+    blacktea_scheduler.start()
+    await load_words()
 
 @bot.event
 async def on_message(message):
@@ -1180,40 +1182,288 @@ async def progress(ctx, member: discord.Member = None):
     await ctx.send(embed=view.progress_embed(), view=view)
 
 # ─────────────────────────────────────────────
-# BLACKTEA
+# BLACKTEA GAME (NEW VERSION)
 # ─────────────────────────────────────────────
-blacktea_sessions = {}
-BLACKTEA_WORDS = [
-    "apple","brave","crane","dream","eagle","flame","grace","heart","ivory","jewel",
-    "knack","lemon","magic","night","ocean","piano","queen","river","storm","tiger",
-    "ultra","vivid","wheat","xenon","yacht","zebra","amber","bliss","chess","dance",
-    "frost","globe","happy","inlet","jokes","karma","lunar","maple","novel","optic",
+import urllib.request
+
+BLACKTEA_CHANNEL_ID = 1482802842900103311
+BLACKTEA_REWARD_PER_WORD = 300
+BLACKTEA_LIVES = 2
+BLACKTEA_TIME_LIMIT = 25  # seconds per turn
+BLACKTEA_REACTION_TIME = 30  # seconds to react and join
+
+# Letter combinations for challenges
+BLACKTEA_COMBOS = [
+    "OS", "AT", "IN", "ER", "AN", "EN", "IS", "OR", "AL", "AR",
+    "ON", "LE", "ST", "RE", "NT", "LY", "ED", "TH", "CH", "SH",
+    "OST", "ATE", "ING", "ANT", "EST", "OUT", "INT", "OWN", "ARD", "ORS",
+    "UND", "ORM", "ACK", "ALL", "ELL", "OOD", "OOL", "EAD", "EAR", "ONG",
 ]
 
-@bot.command()
-async def blacktea(ctx):
-    cid = str(ctx.channel.id)
-    if cid in blacktea_sessions:
-        return await ctx.send("⚠️ A Blacktea game is already running here.")
-    word = random.choice(BLACKTEA_WORDS)
-    letters = list(word); random.shuffle(letters)
-    scrambled = " ".join(letters).upper()
-    blacktea_sessions[cid] = {"word": word}
-    embed = discord.Embed(title="🍵 Blacktea — Word Unscramble", description=f"Unscramble:\n\n**`{scrambled}`**\n\n**30 seconds.**", color=0x8B4513)
-    embed.set_footer(text=f"Started by {ctx.author.display_name}")
-    await ctx.send(embed=embed)
-    def check(m): return m.channel == ctx.channel and not m.bot
+# Simple English word validation using a word list
+ENGLISH_WORDS = set()
+
+async def load_words():
+    global ENGLISH_WORDS
+    if ENGLISH_WORDS:
+        return
     try:
-        while True:
-            msg = await bot.wait_for("message", timeout=30.0, check=check)
-            if msg.content.lower().strip() == word:
-                data = await get_db(); ensure_user(data, msg.author.id)
-                data[str(msg.author.id)]["blacktea_wins"] += 1
-                await save_db(data); del blacktea_sessions[cid]
-                return await ctx.send(f"🎉 **{msg.author.display_name}** got it! The word was **{word}**!")
-    except asyncio.TimeoutError:
-        blacktea_sessions.pop(cid, None)
-        await ctx.send(f"⏱️ Time's up! The word was **{word}**.")
+        # Use a common word list
+        url = "https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as f:
+            ENGLISH_WORDS = set(f.read().decode().splitlines())
+        print(f"✅ Loaded {len(ENGLISH_WORDS)} English words")
+    except Exception as e:
+        print(f"⚠️ Could not load word list: {e}")
+        # Fallback - accept any word with 3+ letters
+        ENGLISH_WORDS = None
+
+def is_valid_word(word: str, combo: str) -> bool:
+    word = word.lower().strip()
+    combo = combo.lower()
+    if len(word) < 3:
+        return False
+    if combo not in word:
+        return False
+    if ENGLISH_WORDS is None:
+        return True  # fallback: accept if contains combo
+    return word in ENGLISH_WORDS
+
+# Active blacktea game state
+blacktea_game = None
+
+class BlackteaGame:
+    def __init__(self, channel, players):
+        self.channel      = channel
+        self.players      = list(players)  # list of Member objects
+        self.lives        = {p.id: BLACKTEA_LIVES for p in players}
+        self.scores       = {p.id: 0 for p in players}
+        self.money        = {p.id: 0 for p in players}
+        self.used_words   = set()
+        self.current_idx  = 0
+        self.combo        = ""
+        self.active       = True
+        self.round        = 0
+
+    @property
+    def current_player(self):
+        return self.players[self.current_idx % len(self.players)]
+
+    def next_player(self):
+        self.current_idx = (self.current_idx + 1) % len(self.players)
+        # Skip eliminated players
+        checked = 0
+        while self.lives[self.current_player.id] <= 0 and checked < len(self.players):
+            self.current_idx = (self.current_idx + 1) % len(self.players)
+            checked += 1
+
+    def alive_players(self):
+        return [p for p in self.players if self.lives[p.id] > 0]
+
+    def new_combo(self):
+        import random
+        self.combo = random.choice(BLACKTEA_COMBOS)
+        self.round += 1
+
+    def results_embed(self):
+        embed = discord.Embed(
+            title="🍵 Blacktea — Game Over!",
+            color=0x8B4513
+        )
+        # Sort by score
+        sorted_players = sorted(self.players, key=lambda p: self.scores[p.id], reverse=True)
+        lines = []
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, p in enumerate(sorted_players):
+            badge  = medals.get(i, f"**{i+1}.**")
+            words  = self.scores[p.id]
+            earned = self.money[p.id]
+            lives  = self.lives[p.id]
+            status = "💀 Eliminated" if lives <= 0 else "🏆 Winner"
+            lines.append(f"{badge} **{p.display_name}** — {words} words • ${earned:,} earned • {status}")
+        embed.description = "\n".join(lines)
+        embed.set_footer(text=f"Total rounds played: {self.round}")
+        return embed
+
+
+async def run_blacktea_game(channel, players):
+    global blacktea_game
+    game = BlackteaGame(channel, players)
+    blacktea_game = game
+
+    await channel.send(
+        f"🍵 **Blacktea starts now!** Players: {', '.join(p.mention for p in players)}\n"
+        f"Rules: Type a word containing the given letters. Wrong word = hidden countdown. "
+        f"Each player has **{BLACKTEA_LIVES} lives** and earns **${BLACKTEA_REWARD_PER_WORD}** per correct word!"
+    )
+    await asyncio.sleep(3)
+
+    while len(game.alive_players()) >= 2 and game.active:
+        player = game.current_player
+        if game.lives[player.id] <= 0:
+            game.next_player()
+            continue
+
+        game.new_combo()
+        hearts = "❤️" * game.lives[player.id]
+
+        prompt = await channel.send(
+            f"🍵 {player.mention} — Give me a word containing **`{game.combo}`**!\n"
+            f"{hearts} | Round {game.round}"
+        )
+
+        def check(m):
+            return m.author == player and m.channel == channel and not m.bot
+
+        answered_correctly = False
+        try:
+            while True:
+                msg = await bot.wait_for("message", timeout=BLACKTEA_TIME_LIMIT, check=check)
+                word = msg.content.lower().strip()
+
+                if word in game.used_words:
+                    await channel.send(f"❌ **{word}** was already used! Try another.", delete_after=5)
+                    continue
+
+                if is_valid_word(word, game.combo):
+                    game.used_words.add(word)
+                    game.scores[player.id] += 1
+                    game.money[player.id]  += BLACKTEA_REWARD_PER_WORD
+                    await channel.send(f"✅ **{word}** accepted! +${BLACKTEA_REWARD_PER_WORD:,}", delete_after=5)
+                    answered_correctly = True
+                    break
+                else:
+                    # Wrong word — hidden countdown starts, wait for correct answer
+                    # Give 10 more seconds silently
+                    try:
+                        msg2 = await bot.wait_for("message", timeout=10, check=check)
+                        word2 = msg2.content.lower().strip()
+                        if word2 in game.used_words:
+                            await channel.send(f"❌ Already used!", delete_after=3)
+                            raise asyncio.TimeoutError()
+                        if is_valid_word(word2, game.combo):
+                            game.used_words.add(word2)
+                            game.scores[player.id] += 1
+                            game.money[player.id]  += BLACKTEA_REWARD_PER_WORD
+                            await channel.send(f"✅ **{word2}** accepted! +${BLACKTEA_REWARD_PER_WORD:,}", delete_after=5)
+                            answered_correctly = True
+                            break
+                        else:
+                            raise asyncio.TimeoutError()
+                    except asyncio.TimeoutError:
+                        break
+
+        except asyncio.TimeoutError:
+            pass
+
+        if not answered_correctly:
+            game.lives[player.id] -= 1
+            if game.lives[player.id] <= 0:
+                await channel.send(f"💀 **{player.display_name}** has been eliminated! They earned **${game.money[player.id]:,}**.")
+                # Pay them out
+                data = await get_db()
+                ensure_user(data, player.id)
+                data[str(player.id)]["wallet"] += game.money[player.id]
+                data[str(player.id)]["blacktea_wins"] += game.scores[player.id]
+                await save_db(data)
+            else:
+                hearts_left = "❤️" * game.lives[player.id]
+                await channel.send(f"💔 **{player.display_name}** lost a life! {hearts_left} remaining.", delete_after=8)
+
+        game.next_player()
+        await asyncio.sleep(2)
+
+    # Game over — pay out remaining players
+    game.active = False
+    alive = game.alive_players()
+    if alive:
+        data = await get_db()
+        for p in alive:
+            ensure_user(data, p.id)
+            data[str(p.id)]["wallet"] += game.money[p.id]
+            data[str(p.id)]["blacktea_wins"] += game.scores[p.id]
+        await save_db(data)
+
+    await channel.send(embed=game.results_embed())
+    blacktea_game = None
+
+
+@tasks.loop(minutes=144)  # ~10 times per 24h (every 2h 24min)
+async def blacktea_scheduler():
+    import random
+    # Random delay so it doesn't always happen at exact same time
+    await asyncio.sleep(random.randint(0, 3600))
+    channel = bot.get_channel(BLACKTEA_CHANNEL_ID)
+    if not channel or blacktea_game:
+        return
+
+    # Post join message
+    join_msg = await channel.send(
+        "🍵 **Blacktea is starting!**\n"
+        "React with ✅ in the next **30 seconds** to join the game!\n"
+        f"Minimum **2 players** needed. Earn **${BLACKTEA_REWARD_PER_WORD}** per correct word!"
+    )
+    await join_msg.add_reaction("✅")
+    await asyncio.sleep(BLACKTEA_REACTION_TIME)
+
+    # Fetch who reacted
+    join_msg = await channel.fetch_message(join_msg.id)
+    players  = []
+    for reaction in join_msg.reactions:
+        if str(reaction.emoji) == "✅":
+            async for user in reaction.users():
+                if not user.bot:
+                    member = channel.guild.get_member(user.id)
+                    if member:
+                        players.append(member)
+
+    if len(players) < 2:
+        await channel.send("🍵 Not enough players joined. Blacktea cancelled.", delete_after=10)
+        return
+
+    import random
+    random.shuffle(players)
+    await run_blacktea_game(channel, players)
+
+
+@bot.command(name="blacktea")
+@commands.has_permissions(administrator=True)
+async def blacktea_manual(ctx):
+    """Admin: Manually trigger a Blacktea game."""
+    channel = bot.get_channel(BLACKTEA_CHANNEL_ID)
+    if not channel:
+        return await ctx.send("❌ Blacktea channel not found.")
+    if blacktea_game:
+        return await ctx.send("⚠️ A Blacktea game is already running.")
+
+    join_msg = await channel.send(
+        "🍵 **Blacktea is starting!**\n"
+        "React with ✅ in the next **30 seconds** to join!\n"
+        f"Minimum **2 players** needed. Earn **${BLACKTEA_REWARD_PER_WORD}** per correct word!"
+    )
+    await join_msg.add_reaction("✅")
+    await ctx.send("✅ Blacktea triggered!", delete_after=5)
+    await asyncio.sleep(BLACKTEA_REACTION_TIME)
+
+    join_msg = await channel.fetch_message(join_msg.id)
+    players  = []
+    for reaction in join_msg.reactions:
+        if str(reaction.emoji) == "✅":
+            async for user in reaction.users():
+                if not user.bot:
+                    member = channel.guild.get_member(user.id)
+                    if member:
+                        players.append(member)
+
+    if len(players) < 2:
+        await channel.send("🍵 Not enough players joined. Blacktea cancelled.", delete_after=10)
+        return
+
+    import random
+    random.shuffle(players)
+    await run_blacktea_game(channel, players)
+
 
 # ─────────────────────────────────────────────
 # ECONOMY COMMANDS
