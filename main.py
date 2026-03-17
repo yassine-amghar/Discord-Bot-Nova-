@@ -9,6 +9,8 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import asyncpg
+import io
+from PIL import Image, ImageDraw, ImageFont
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -1605,9 +1607,91 @@ async def coinflip(ctx, amount: str, side: str):
         msg = f"🪙 **{result.upper()}...** You lost **${bet:,}**."
     await save_db(data); await ctx.send(msg)
 
+# ─────────────────────────────────────────────
+# BLACKJACK TABLE RENDERER (PIL)
+# ─────────────────────────────────────────────
+CARD_W     = 80
+CARD_H     = 112
+TABLE_W    = 800
+TABLE_H    = 600
+FELT_COLOR = (35, 100, 55)
+FELT_DARK  = (25, 80, 42)
+GOLD_COLOR = (212, 175, 55)
+CARDS_DIR  = "./cards"
+
+def _draw_table_base(draw):
+    draw.rectangle([0, 0, TABLE_W, TABLE_H], fill=FELT_DARK)
+    draw.rectangle([8, 8, TABLE_W-8, TABLE_H-8], fill=FELT_COLOR)
+    draw.ellipse([220, 220, 580, 380], outline=GOLD_COLOR, width=2)
+    try:
+        font  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+        sfont = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+    except Exception:
+        font = sfont = ImageFont.load_default()
+    draw.text((400, 285), "BLACKJACK", fill=GOLD_COLOR, font=font,  anchor="mm")
+    draw.text((400, 310), "Pays 3 to 2", fill=GOLD_COLOR, font=sfont, anchor="mm")
+    draw.text((400, 45),  "DEALER",     fill=GOLD_COLOR, font=sfont, anchor="mm")
+    draw.text((400, 555), "PLAYER",     fill=GOLD_COLOR, font=sfont, anchor="mm")
+
+def _load_card(code):
+    path = os.path.join(CARDS_DIR, f"{code.upper()}.png")
+    if os.path.exists(path):
+        return Image.open(path).convert("RGBA").resize((CARD_W, CARD_H), Image.LANCZOS)
+    return _placeholder_card(code)
+
+def _placeholder_card(code):
+    img  = Image.new("RGBA", (CARD_W, CARD_H), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, CARD_W-1, CARD_H-1], outline=(0,0,0), width=2)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+    except Exception:
+        font = ImageFont.load_default()
+    suit   = code[-1].upper()
+    value  = code[:-1].upper()
+    colors = {"H": (200,30,30), "D": (200,30,30), "S": (20,20,20), "C": (20,20,20)}
+    syms   = {"H": "♥", "D": "♦", "S": "♠", "C": "♣"}
+    color  = colors.get(suit, (20,20,20))
+    sym    = syms.get(suit, suit)
+    draw.text((CARD_W//2, CARD_H//2-12), value, fill=color, font=font, anchor="mm")
+    draw.text((CARD_W//2, CARD_H//2+14), sym,   fill=color, font=font, anchor="mm")
+    return img
+
+def _card_back():
+    img  = Image.new("RGBA", (CARD_W, CARD_H), (255,255,255,255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, CARD_W-1, CARD_H-1], fill=(15,40,120), outline=(0,0,0), width=2)
+    for y in range(10, CARD_H-10, 8):
+        for x in range(10, CARD_W-10, 8):
+            draw.rectangle([x, y, x+4, y+4], fill=(25,60,160))
+    return img
+
+def _place_cards(table, cards, y_center, hide_second=False, overlap=20):
+    n       = len(cards)
+    step    = CARD_W - overlap
+    total_w = CARD_W + (n-1)*step
+    x_start = (TABLE_W - total_w) // 2
+    y_start = y_center - CARD_H // 2
+    for i, code in enumerate(cards):
+        card_img = _card_back() if (hide_second and i == 1) else _load_card(code)
+        shadow   = Image.new("RGBA", (CARD_W+4, CARD_H+4), (0,0,0,80))
+        table.paste(shadow, (x_start + i*step + 3, y_start + 3), shadow)
+        table.paste(card_img, (x_start + i*step, y_start), card_img)
+
+def render_blackjack_table(dealer_cards, player_cards, hide_dealer=True):
+    table = Image.new("RGBA", (TABLE_W, TABLE_H), FELT_COLOR)
+    draw  = ImageDraw.Draw(table)
+    _draw_table_base(draw)
+    _place_cards(table, dealer_cards, y_center=140, hide_second=hide_dealer)
+    _place_cards(table, player_cards, y_center=450, hide_second=False)
+    buf = io.BytesIO()
+    table.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
 class BlackjackView(discord.ui.View):
     VALS  = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
-    SUITS = ["♠","♥","♦","♣"]
+    SUITS = ["S","H","D","C"]
     def __init__(self, ctx, bet, data):
         super().__init__(timeout=120)
         self.ctx = ctx; self.bet = bet; self.data = data
@@ -1625,14 +1709,18 @@ class BlackjackView(discord.ui.View):
         aces = sum(1 for c in hand if c[:-1]=="A")
         while t > 21 and aces: t -= 10; aces -= 1
         return t
-    def build_embed(self, ended=False, note=""):
-        pt = self.total(self.player); dt = self.total(self.dealer)
-        e  = discord.Embed(title="🃏 Blackjack", color=0x2ECC71)
-        e.add_field(name=f"Dealer {'('+str(dt)+')' if ended else ''}", value="  ".join(self.dealer) if ended else f"{self.dealer[0]}  🂠", inline=False)
-        e.add_field(name=f"You ({pt})", value="  ".join(self.player), inline=False)
-        e.add_field(name="Bet", value=f"${self.bet:,}", inline=True)
-        if note: e.set_footer(text=note)
-        return e
+    async def send_table(self, interaction, hide_dealer=True, note=""):
+        buf   = render_blackjack_table(self.dealer, self.player, hide_dealer=hide_dealer)
+        file  = discord.File(buf, filename="table.png")
+        pt    = self.total(self.player)
+        dt    = self.total(self.dealer)
+        embed = discord.Embed(title="🃏 Blackjack", color=0x236432)
+        embed.add_field(name=f"Dealer {'('+str(dt)+')' if not hide_dealer else '(??)'}", value="  ".join(self.dealer) if not hide_dealer else f"{self.dealer[0]}  🂠", inline=True)
+        embed.add_field(name=f"You ({pt})", value="  ".join(self.player), inline=True)
+        embed.add_field(name="Bet", value=f"${self.bet:,}", inline=False)
+        if note: embed.set_footer(text=note)
+        embed.set_image(url="attachment://table.png")
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
     async def resolve(self, interaction, status):
         uid = str(self.ctx.author.id); mult = get_multiplier(self.data, self.ctx.author.id)
         if status == "win":
@@ -1645,14 +1733,14 @@ class BlackjackView(discord.ui.View):
             note = f"😔 You lost ${self.bet:,}."
         await save_db(self.data)
         for c in self.children: c.disabled = True
-        await interaction.response.edit_message(embed=self.build_embed(ended=True, note=note), view=self)
+        await self.send_table(interaction, hide_dealer=False, note=note)
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
     async def hit(self, interaction, btn):
         if interaction.user != self.ctx.author: return await interaction.response.send_message("Not your game!", ephemeral=True)
         self.player.append(self.deck.pop()); pt = self.total(self.player)
         if pt > 21: return await self.resolve(interaction, "lose")
         if pt == 21: return await self.stand_logic(interaction)
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await self.send_table(interaction)
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
     async def stand(self, interaction, btn):
         if interaction.user != self.ctx.author: return await interaction.response.send_message("Not your game!", ephemeral=True)
@@ -1666,15 +1754,27 @@ class BlackjackView(discord.ui.View):
 @bot.command(aliases=["bj"])
 async def blackjack(ctx, amount: str):
     data = await get_db(); ensure_user(data, ctx.author.id); uid = str(ctx.author.id)
-    bet = parse_amount(amount, data[uid]["wallet"])
+    bet  = parse_amount(amount, data[uid]["wallet"])
     if not bet or bet <= 0 or bet > data[uid]["wallet"]: return await ctx.send("❌ Invalid bet.")
     data[uid]["wallet"] -= bet; await save_db(data)
     view = BlackjackView(ctx, bet, data)
     if view.total(view.player) == 21:
         win = int(bet * 1.5); data[uid]["wallet"] += bet + win; await save_db(data)
-        return await ctx.send(embed=view.build_embed(ended=True, note=f"🃏 Blackjack! +${win:,}"))
-    await ctx.send(embed=view.build_embed(), view=view) 
-
+        buf   = render_blackjack_table(view.dealer, view.player, hide_dealer=False)
+        file  = discord.File(buf, filename="table.png")
+        embed = discord.Embed(title="🃏 Blackjack!", color=0xFFD700)
+        embed.set_image(url="attachment://table.png")
+        embed.set_footer(text=f"🃏 Blackjack! +${win:,}")
+        return await ctx.send(embed=embed, file=file)
+    buf   = render_blackjack_table(view.dealer, view.player, hide_dealer=True)
+    file  = discord.File(buf, filename="table.png")
+    pt    = view.total(view.player)
+    embed = discord.Embed(title="🃏 Blackjack", color=0x236432)
+    embed.add_field(name="Dealer (??)", value=f"{view.dealer[0]}  🂠", inline=True)
+    embed.add_field(name=f"You ({pt})", value="  ".join(view.player), inline=True)
+    embed.add_field(name="Bet", value=f"${bet:,}", inline=False)
+    embed.set_image(url="attachment://table.png")
+    await ctx.send(embed=embed, file=file, view=view)
 _REDS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 ROULETTE_BETS = {
     "red":    (lambda n: n in _REDS, 2),
