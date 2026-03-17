@@ -1840,19 +1840,6 @@ def _place_cards(table, cards, y_center, hide_second=False, overlap=20):
         shadow   = Image.new("RGBA", (CARD_W+4, CARD_H+4), (0,0,0,80))
         table.paste(shadow, (x_start + i*step + 3, y_start + 3), shadow)
         table.paste(card_img, (x_start + i*step, y_start), card_img)
-
-def render_blackjack_table(dealer_cards, player_cards, hide_dealer=True):
-    BASE  = (45, 65, 48)
-    table = Image.new("RGBA", (TABLE_W, TABLE_H), BASE)
-    draw  = ImageDraw.Draw(table)
-    _draw_table_base(draw)
-    _place_cards(table, dealer_cards, y_center=140, hide_second=hide_dealer)
-    _place_cards(table, player_cards, y_center=450, hide_second=False)
-    buf = io.BytesIO()
-    table.convert("RGB").save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
 class BlackjackView(discord.ui.View):
     VALS  = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
     SUITS = ["S","H","D","C"]
