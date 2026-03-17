@@ -1633,8 +1633,26 @@ def _draw_table_base(draw):
     draw.text((400, 45),  "DEALER",     fill=GOLD_COLOR, font=sfont, anchor="mm")
     draw.text((400, 555), "PLAYER",     fill=GOLD_COLOR, font=sfont, anchor="mm")
 
+def _code_to_filename(code):
+    """Convert card code like AH, 10D, KS to filename like ace_of_hearts.png"""
+    code = code.upper()
+    value = code[:-1]
+    suit  = code[-1]
+    value_map = {
+        "A": "ace", "2": "2", "3": "3", "4": "4", "5": "5",
+        "6": "6", "7": "7", "8": "8", "9": "9", "10": "10",
+        "J": "jack", "Q": "queen", "K": "king"
+    }
+    suit_map = {
+        "H": "hearts", "D": "diamonds", "S": "spades", "C": "clubs"
+    }
+    v = value_map.get(value, value.lower())
+    s = suit_map.get(suit, suit.lower())
+    return f"{v}_of_{s}.png"
+
 def _load_card(code):
-    path = os.path.join(CARDS_DIR, f"{code.upper()}.png")
+    filename = _code_to_filename(code)
+    path     = os.path.join(CARDS_DIR, filename)
     if os.path.exists(path):
         return Image.open(path).convert("RGBA").resize((CARD_W, CARD_H), Image.LANCZOS)
     return _placeholder_card(code)
@@ -1658,6 +1676,10 @@ def _placeholder_card(code):
     return img
 
 def _card_back():
+    # Use back.png from cards folder if available
+    path = os.path.join(CARDS_DIR, "back.png")
+    if os.path.exists(path):
+        return Image.open(path).convert("RGBA").resize((CARD_W, CARD_H), Image.LANCZOS)
     img  = Image.new("RGBA", (CARD_W, CARD_H), (255,255,255,255))
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, CARD_W-1, CARD_H-1], fill=(15,40,120), outline=(0,0,0), width=2)
